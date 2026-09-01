@@ -1,0 +1,6 @@
+{
+  "base_url": "https://opencode.ai/zen/v1",
+  "api_key": "your-api-key",
+  "model": "deepseek-v4-flash",
+  "temperature": 0.7
+}
