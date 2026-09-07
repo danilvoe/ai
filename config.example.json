@@ -1,6 +1,25 @@
 {
-  "base_url": "https://opencode.ai/zen/v1",
+  "base_url": "https://openai.bothub.chat/v1",
   "api_key": "your-api-key",
-  "model": "deepseek-v4-flash",
-  "temperature": 0.7
+  "temperature": 0.7,
+  "models": [
+    {
+      "label": "Слабая",
+      "model": "model-id-from-bothub",
+      "input_cost_per_million": 0,
+      "output_cost_per_million": 0
+    },
+    {
+      "label": "Средняя",
+      "model": "model-id-from-bothub",
+      "input_cost_per_million": 0,
+      "output_cost_per_million": 0
+    },
+    {
+      "label": "Сильная",
+      "model": "model-id-from-bothub",
+      "input_cost_per_million": 0,
+      "output_cost_per_million": 0
+    }
+  ]
 }
