@@ -1,9 +1,10 @@
-# Day 2: Control the API Response
+# Day 4: Temperature
 
-The script sends the same user query to a Chat Completions-compatible API twice and prints both responses:
+The script sends the same user query to a Chat Completions-compatible API three times. Only the `temperature` parameter changes:
 
-1. Without constraints.
-2. With response controls: a strict JSON format, a 25-word instruction, `max_tokens`, and an explicit completion instruction.
+1. `0`
+2. `0.7`
+3. `1.2`
 
 ## Setup
 
@@ -16,28 +17,20 @@ Set `api_key`, `base_url`, and `model` in `config.json`. The configuration file 
 ## Run
 
 ```bash
-python3 response_control.py
+python3 temperature.py
 ```
 
-Example output sections make the comparison suitable for a screen recording:
+The output groups each answer by its temperature value:
 
 ```text
-=== Without constraints ===
+=== temperature = 0 ===
 ...
 
-=== With JSON format, length, and completion controls ===
-{"answer":"...","status":"complete"}
+=== temperature = 0.7 ===
+...
+
+=== temperature = 1.2 ===
+...
 ```
 
-## Controls used
-
-The controlled request keeps the user query unchanged and adds a system instruction:
-
-```text
-Ответь строго одним JSON-объектом формата
-`{"answer":"<одно предложение>","status":"complete"}`.
-Значение answer не должно превышать 25 слов. Заверши ответ полем status
-со значением complete и не добавляй текст после }.
-```
-
-It also sends `max_tokens: 150`. The final `status: "complete"` field and the instruction to add nothing after `}` are the completion condition. The larger technical limit leaves room for models that use internal reasoning; the 25-word instruction controls the visible answer length.
+`temperature.py` explicitly sets the parameter for every request, so the optional `temperature` setting in `config.json` does not affect the comparison.
