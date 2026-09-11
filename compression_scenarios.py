@@ -71,17 +71,46 @@ def build_client(config: dict, offline: bool) -> object:
     return FakeClient(config) if offline else LLMClient(config)
 
 
+class RecordingClient:
+    """Обёртка над клиентом: отдельно считает служебные вызовы на сжатие.
+
+    Сжатие истории — это отдельный LLM-запрос (на создание summary), который не
+    попадает в учёт сессии агента (agent.usage). Чтобы показать его стоимость,
+    обёртка помечает такие вызовы и копит их токены.
+    """
+
+    def __init__(self, client) -> None:
+        self._client = client
+        self.summary_prompt_tokens = 0
+        self.summary_completion_tokens = 0
+        self.summary_calls = 0
+
+    @property
+    def config(self) -> dict:
+        return self._client.config
+
+    def complete(self, messages, temperature=None, max_tokens=None) -> Completion:
+        is_summary = any("модуль сжатия" in m.get("content", "") for m in messages)
+        reply = self._client.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        if is_summary:
+            self.summary_calls += 1
+            self.summary_prompt_tokens += reply.prompt_tokens or 0
+            self.summary_completion_tokens += reply.completion_tokens or 0
+        return reply
+
+
 def _new_agent(config: dict, offline: bool, compression: CompressionConfig | None):
     """Создаёт агента в отдельной временной сессии."""
     tmp = tempfile.TemporaryDirectory()
     conversation = SessionStore(Path(tmp.name)).create()
+    client = RecordingClient(build_client(config, offline))
     agent = Agent(
-        build_client(config, offline),
+        client,
         conversation,
         max_context_tokens=config.get("max_context_tokens"),
         compression=compression,
     )
-    return agent, conversation
+    return agent, conversation, client
 
 
 def _format_report(title: str, agent: Agent, context_after: int) -> None:
@@ -101,9 +130,9 @@ def _format_report(title: str, agent: Agent, context_after: int) -> None:
 
 
 def run_dialog(config: dict, offline: bool, compression: CompressionConfig | None,
-               turns: int) -> tuple[Agent, object, str]:
+               turns: int) -> tuple[Agent, object, str, bool]:
     """Проводит длинный диалог и возвращает агента, сессию и контрольный факт."""
-    agent, conversation = _new_agent(config, offline, compression)
+    agent, conversation, client = _new_agent(config, offline, compression)
     # Несколько фактов, разбросанных по ранним репликам, чтобы проверить их
     # сохранность после сжатия.
     early_fact = "кодовое имя проекта — 'Север'"
@@ -117,13 +146,28 @@ def run_dialog(config: dict, offline: bool, compression: CompressionConfig | Non
         for i in range(1, turns - len(facts) + 1)
     ]
     stopped = False
-    for message in script:
+    for index, message in enumerate(script, start=1):
+        before_summarized = conversation.summarized
         try:
             agent.ask(message)
         except ContextOverflowError:
             stopped = True
             break
-    return agent, conversation, early_fact, stopped
+        did_compress = conversation.summarized > before_summarized
+        fresh = len(conversation.recent_messages)
+        print(
+            f"    ход {index:>2}: свежих {fresh:>2}, "
+            f"свёрнуто {conversation.summarized:>2}"
+            + ("  [СЖАТИЕ]" if did_compress else "")
+        )
+    if compression is not None:
+        print(
+            f"    вызовов на сжатие: {client.summary_calls}, "
+            f"их токены: {client.summary_prompt_tokens} (вход) + "
+            f"{client.summary_completion_tokens} (выход)"
+        )
+    print()
+    return agent, conversation, early_fact, stopped, client
 
 
 def run_quality_probe(agent: Agent, offline: bool, fact: str) -> tuple[bool, str]:
@@ -179,13 +223,15 @@ def main() -> None:
 
     print(f"Режим: {'офлайн (имитация)' if offline else 'онлайн (реальный API)'}")
     print(f"Диалог: {args.turns} реплик, сжатие: последние {keep_recent} как есть.\n")
+    print("Пошагово (сжатие срабатывает, когда свежих сообщений становится "
+          f"больше {keep_recent + compression.summarize_every}):\n")
 
     # 1. Без сжатия.
-    agent_plain, _, fact, plain_stopped = run_dialog(config, offline, None, args.turns)
+    agent_plain, _, fact, plain_stopped, _ = run_dialog(config, offline, None, args.turns)
     _format_report("БЕЗ сжатия", agent_plain, agent_plain.context_tokens)
 
     # 2. Со сжатием.
-    agent_compressed, _, fact, comp_stopped = run_dialog(config, offline, compression, args.turns)
+    agent_compressed, _, fact, comp_stopped, client_comp = run_dialog(config, offline, compression, args.turns)
     _format_report("СО сжатием", agent_compressed, agent_compressed.context_tokens)
 
     if plain_stopped:
@@ -204,6 +250,11 @@ def main() -> None:
     ratio = (saved / agent_plain.usage.total_request_tokens * 100
              if agent_plain.usage.total_request_tokens else 0)
     print(f"  экономия: {saved} токенов ({ratio:.1f}%)")
+    print("\n  Служебные вызовы на сжатие (отдельно, не входят в 'запросы' выше):")
+    print(f"    кол-во: {client_comp.summary_calls}")
+    print(f"    токены: {client_comp.summary_prompt_tokens} (вход) + "
+          f"{client_comp.summary_completion_tokens} (выход) = "
+          f"{client_comp.summary_prompt_tokens + client_comp.summary_completion_tokens} всего")
 
 
 if __name__ == "__main__":

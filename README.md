@@ -11,6 +11,12 @@ It prints how the context, per-session tokens, and cost differ, and then asks a
 control question about a fact from the start of the dialog to compare answer
 quality (did the agent retain the gist after compression?).
 
+The run also shows a per-turn log: on each turn you see how many fresh (not yet
+summarized) messages remain and how many are folded into the summary, with a
+`[СЖАТИЕ]` marker on the exact turns where compression fires. The summary
+calls themselves are counted separately (they are auxiliary LLM requests, so
+they are not part of the dialog's token accounting).
+
 ## What was added
 
 - `agent/compression.py` — `CompressionConfig`, `build_context_messages`
