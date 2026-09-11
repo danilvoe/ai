@@ -1,4 +1,10 @@
-"""Сессии диалога агента: история каждой беседы сохраняется в отдельный JSON."""
+"""Сессии диалога агента: история каждой беседы сохраняется в отдельный JSON.
+
+Помимо массива сообщений сессия хранит отдельное поле `summary` — краткое
+содержание старой части диалога. При включённом сжатии старые сообщения
+заменяются этим summary, а в запрос к модели подставляется именно он, а не
+полная история (см. agent/compression.py).
+"""
 
 import json
 from datetime import datetime
@@ -21,12 +27,18 @@ def _new_session_id(existing: set[str] | None = None) -> str:
 
 
 class Conversation:
-    """История одной сессии диалога, хранящаяся в JSON-файле."""
+    """История одной сессии диалога, хранящаяся в JSON-файле.
+
+    В файле хранится объект вида ``{"summary": "...", "messages": [...]}``.
+    Формат старой версии (простой массив сообщений) поддерживается при чтении,
+    чтобы существующие сессии продолжали открываться.
+    """
 
     def __init__(self, session_id: str, history_dir: Path = HISTORY_DIR) -> None:
         self._session_id = session_id
         self._path = history_dir / f"{session_id}.json"
         self._messages: list[dict] = []
+        self._summary = ""
         self.load()
 
     @property
@@ -35,29 +47,55 @@ class Conversation:
 
     @property
     def messages(self) -> list[dict]:
+        """Актуальные сообщения сессии (окно последних сообщений)."""
         return self._messages
+
+    @property
+    def summary(self) -> str:
+        """Краткое содержание старой части диалога (пусто, если сжатия не было)."""
+        return self._summary
 
     def load(self) -> None:
         """Загружает историю из JSON-файла сессии."""
         if not self._path.exists():
             self._messages = []
+            self._summary = ""
             return
         try:
             with self._path.open(encoding="utf-8") as file:
-                self._messages = json.load(file)
+                data = json.load(file)
         except (OSError, json.JSONDecodeError):
             self._messages = []
+            self._summary = ""
+            return
+
+        if isinstance(data, dict):
+            self._summary = data.get("summary", "") or ""
+            self._messages = data.get("messages", []) or []
+        else:
+            self._summary = ""
+            self._messages = data
 
     def save(self) -> None:
         """Сохраняет историю в JSON-файл сессии."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._path.open("w", encoding="utf-8") as file:
-            json.dump(self._messages, file, ensure_ascii=False, indent=2)
+            json.dump(
+                {"summary": self._summary, "messages": self._messages},
+                file,
+                ensure_ascii=False,
+                indent=2,
+            )
 
     def append(self, role: str, content: str) -> None:
         """Добавляет сообщение и сохраняет историю."""
         self._messages.append({"role": role, "content": content})
         self._trim()
+        self.save()
+
+    def set_summary(self, summary: str) -> None:
+        """Устанавливает краткое содержание старой части диалога."""
+        self._summary = summary
         self.save()
 
     def pop_last(self) -> None:
@@ -67,8 +105,9 @@ class Conversation:
             self.save()
 
     def clear(self) -> None:
-        """Очищает историю сессии."""
+        """Очищает историю и summary сессии."""
         self._messages = []
+        self._summary = ""
         self.save()
 
     def _trim(self) -> None:

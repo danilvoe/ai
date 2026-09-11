@@ -1,3 +1,44 @@
+# Day 9: Context management — history compression
+
+`compression_scenarios.py` runs the same long dialog twice and compares:
+
+- **Without compression**: the full history goes into every request.
+- **With compression**: the last `keep_recent` messages are kept as-is, and the
+  rest is replaced by a `summary` that is substituted into the request instead of
+  the full history.
+
+It prints how the context, per-session tokens, and cost differ, and then asks a
+control question about a fact from the start of the dialog to compare answer
+quality (did the agent retain the gist after compression?).
+
+## What was added
+
+- `agent/compression.py` — `CompressionConfig`, `build_context_messages`
+  (summary + recent window), `build_summary_prompt` / `summarize_messages`
+  (LLM call to compress), `compress` (drop old messages, keep summary), and
+  `compressed_context_tokens`.
+- `agent/conversation.py` — a session now stores a separate `summary` field
+  next to `messages` (old array format still loads).
+- `agent/agent.py` — the agent builds the request from `summary + recent window`
+  and triggers compression after each turn when the window overgrows.
+- `agent/cli.py` — reads the `compression` section and shows its status.
+- `agent/llm_client.py` — `complete()` accepts `max_tokens` (for the summary).
+
+Config keys (in the `compression` section): `keep_recent` (last N messages kept
+as-is), `summarize_every` (compress when the window exceeds this), `max_tokens`.
+
+## Run
+
+```bash
+python3 compression_scenarios.py          # offline: responses are simulated locally
+python3 compression_scenarios.py --online # real API requests, real quality check
+python3 compression_scenarios.py --turns 48   # longer dialog, bigger savings
+```
+
+In offline mode a control question checks that the fact survives in the summary
+(a realistic summarizer is simulated). With `--online` quality is judged by the
+real model's answer.
+
 # Day 8: Token accounting
 
 `token_scenarios.py` counts tokens for the current request, the whole dialog

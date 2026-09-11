@@ -3,6 +3,11 @@
   "api_key": "your-api-key",
   "temperature": 0.7,
   "max_context_tokens": 65536,
+  "compression": {
+    "keep_recent": 10,
+    "summarize_every": 10,
+    "max_tokens": 400
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

@@ -5,16 +5,32 @@ import sys
 import urllib.error
 
 from .agent import Agent
+from .compression import CompressionConfig
 from .config import load_config
 from .conversation import SessionStore
 from .llm_client import LLMClient
 from .tokens import ContextOverflowError
 
 
+def _compression_from_config(config: dict) -> CompressionConfig:
+    """Читает настройки сжатия истории из конфигурации."""
+    section = config.get("compression", {}) or {}
+    return CompressionConfig(
+        keep_recent=section.get("keep_recent", 10),
+        summarize_every=section.get("summarize_every", 10),
+        max_tokens=section.get("max_tokens"),
+    )
+
+
 def build_agent(conversation) -> Agent:
     config = load_config()
     client = LLMClient(config)
-    return Agent(client, conversation, max_context_tokens=config.get("max_context_tokens"))
+    return Agent(
+        client,
+        conversation,
+        max_context_tokens=config.get("max_context_tokens"),
+        compression=_compression_from_config(config),
+    )
 
 
 def print_usage(agent: Agent) -> None:
@@ -72,6 +88,11 @@ def main() -> None:
 
     if agent.history:
         print(f"Восстановлен контекст: {len(agent.history)} сообщений.\n")
+    if agent.compression.enabled:
+        mode = "включено"
+        if agent.conversation.summary:
+            mode = f"включено (summary уже есть, окно {len(agent.history)} сообщений)"
+        print(f"Сжатие истории: {mode}.\n")
     print("Агент запущен. Введите 'exit' или Ctrl+C для выхода.\n")
 
     while True:

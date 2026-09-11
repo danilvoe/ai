@@ -28,7 +28,12 @@ class LLMClient:
         """Конфигурация клиента, переданная при создании."""
         return self._config
 
-    def complete(self, messages: list[dict], temperature: float | None = None) -> Completion:
+    def complete(
+        self,
+        messages: list[dict],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Completion:
         body = {
             "model": self._config["model"],
             "messages": messages,
@@ -36,6 +41,8 @@ class LLMClient:
             if temperature is not None
             else self._config.get("temperature", 0.7),
         }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         request = urllib.request.Request(
             self._url,
             data=json.dumps(body).encode("utf-8"),
