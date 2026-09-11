@@ -52,6 +52,23 @@ def print_usage(agent: Agent) -> None:
     print()
 
 
+def print_history(agent: Agent) -> None:
+    """Выводит полную историю диалога, помечая сообщения, свёрнутые в summary."""
+    conv = agent.conversation
+    if not conv.messages:
+        print("История пуста.\n")
+        return
+    print(f"История диалога ({len(conv.messages)} сообщений):")
+    for index, message in enumerate(conv.messages):
+        is_summarized = index < conv.summarized
+        marker = " (в summary)" if is_summarized else ""
+        who = "Вы" if message.get("role") == "user" else "Агент"
+        print(f"[{index + 1}] {who}{marker}: {message.get('content', '')}")
+    if conv.summary:
+        print(f"\nКраткое содержание свёрнутой части:\n{conv.summary}")
+    print()
+
+
 def pick_session(store: SessionStore) -> Agent:
     """Показывает список сессий и возвращает агента для выбранной или новой."""
     sessions = store.list_sessions()
@@ -87,13 +104,17 @@ def main() -> None:
         raise SystemExit(1) from exc
 
     if agent.history:
-        print(f"Восстановлен контекст: {len(agent.history)} сообщений.\n")
+        print(f"Восстановлен контекст: {len(agent.history)} сообщений.")
     if agent.compression.enabled:
-        mode = "включено"
-        if agent.conversation.summary:
-            mode = f"включено (summary уже есть, окно {len(agent.history)} сообщений)"
-        print(f"Сжатие истории: {mode}.\n")
-    print("Агент запущен. Введите 'exit' или Ctrl+C для выхода.\n")
+        conv = agent.conversation
+        if conv.summary:
+            print(
+                f"Сжатие истории: включено ({len(conv.messages)} сообщений, "
+                f"из них {conv.summarized} свёрнуты в summary)."
+            )
+        else:
+            print("Сжатие истории: включено.")
+    print()
 
     while True:
         try:
@@ -110,6 +131,9 @@ def main() -> None:
         if user_request.lower() in ("clear", "очистить"):
             agent.conversation.clear()
             print("История диалога очищена.\n")
+            continue
+        if user_request.lower() in ("history", "история", "показать историю"):
+            print_history(agent)
             continue
 
         try:

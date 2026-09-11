@@ -1,9 +1,11 @@
 """Сессии диалога агента: история каждой беседы сохраняется в отдельный JSON.
 
-Помимо массива сообщений сессия хранит отдельное поле `summary` — краткое
-содержание старой части диалога. При включённом сжатии старые сообщения
-заменяются этим summary, а в запрос к модели подставляется именно он, а не
-полная история (см. agent/compression.py).
+Сессия хранит полную историю ``messages`` (для просмотра пользователем) и
+отдельное поле ``summary`` — краткое содержание старой части диалога. Когда
+включается сжатие, в запрос к модели подставляется ``summary + последние
+сообщения``, но сами старые сообщения не удаляются, а остаются в истории.
+Счётчик ``summarized`` отмечает, сколько первых сообщений уже свернуто в
+summary (см. agent/compression.py).
 """
 
 import json
@@ -29,9 +31,16 @@ def _new_session_id(existing: set[str] | None = None) -> str:
 class Conversation:
     """История одной сессии диалога, хранящаяся в JSON-файле.
 
-    В файле хранится объект вида ``{"summary": "...", "messages": [...]}``.
-    Формат старой версии (простой массив сообщений) поддерживается при чтении,
-    чтобы существующие сессии продолжали открываться.
+    В файле хранится объект вида::
+
+        {
+            "summary": "...",        # краткое содержание старой части
+            "summarized": 42,        # сколько первых сообщений свернуто в summary
+            "messages": [...],       # полная история (для просмотра)
+        }
+
+    Формат старой версии (простой массив сообщений или объект без ``summarized``)
+    поддерживается при чтении, чтобы существующие сессии продолжали открываться.
     """
 
     def __init__(self, session_id: str, history_dir: Path = HISTORY_DIR) -> None:
@@ -39,6 +48,7 @@ class Conversation:
         self._path = history_dir / f"{session_id}.json"
         self._messages: list[dict] = []
         self._summary = ""
+        self._summarized = 0
         self.load()
 
     @property
@@ -47,7 +57,7 @@ class Conversation:
 
     @property
     def messages(self) -> list[dict]:
-        """Актуальные сообщения сессии (окно последних сообщений)."""
+        """Полная история диалога (все сообщения, включая свёрнутые)."""
         return self._messages
 
     @property
@@ -55,11 +65,22 @@ class Conversation:
         """Краткое содержание старой части диалога (пусто, если сжатия не было)."""
         return self._summary
 
+    @property
+    def summarized(self) -> int:
+        """Сколько первых сообщений истории уже свёрнуто в summary."""
+        return self._summarized
+
+    @property
+    def recent_messages(self) -> list[dict]:
+        """Сообщения, которые ещё не свёрнуты в summary (свежее окно)."""
+        return self._messages[self._summarized:]
+
     def load(self) -> None:
         """Загружает историю из JSON-файла сессии."""
         if not self._path.exists():
             self._messages = []
             self._summary = ""
+            self._summarized = 0
             return
         try:
             with self._path.open(encoding="utf-8") as file:
@@ -67,13 +88,18 @@ class Conversation:
         except (OSError, json.JSONDecodeError):
             self._messages = []
             self._summary = ""
+            self._summarized = 0
             return
 
         if isinstance(data, dict):
             self._summary = data.get("summary", "") or ""
+            self._summarized = data.get("summarized", 0) or 0
             self._messages = data.get("messages", []) or []
+            if self._summarized > len(self._messages):
+                self._summarized = len(self._messages)
         else:
             self._summary = ""
+            self._summarized = 0
             self._messages = data
 
     def save(self) -> None:
@@ -81,7 +107,11 @@ class Conversation:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._path.open("w", encoding="utf-8") as file:
             json.dump(
-                {"summary": self._summary, "messages": self._messages},
+                {
+                    "summary": self._summary,
+                    "summarized": self._summarized,
+                    "messages": self._messages,
+                },
                 file,
                 ensure_ascii=False,
                 indent=2,
@@ -93,9 +123,14 @@ class Conversation:
         self._trim()
         self.save()
 
-    def set_summary(self, summary: str) -> None:
-        """Устанавливает краткое содержание старой части диалога."""
+    def set_summary(self, summary: str, summarized: int | None = None) -> None:
+        """Устанавливает краткое содержание старой части диалога.
+
+        ``summarized`` — сколько первых сообщений теперь покрыто summary.
+        """
         self._summary = summary
+        if summarized is not None:
+            self._summarized = min(max(0, summarized), len(self._messages))
         self.save()
 
     def pop_last(self) -> None:
@@ -108,11 +143,15 @@ class Conversation:
         """Очищает историю и summary сессии."""
         self._messages = []
         self._summary = ""
+        self._summarized = 0
         self.save()
 
     def _trim(self) -> None:
         """Обрезает историю до последних MAX_MESSAGES сообщений."""
         if len(self._messages) > MAX_MESSAGES:
+            excess = len(self._messages) - MAX_MESSAGES
+            # Свёрнутые сообщения отбрасываем в первую очередь.
+            self._summarized = max(0, self._summarized - excess)
             self._messages = self._messages[-MAX_MESSAGES:]
 
 

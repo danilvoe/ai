@@ -88,7 +88,8 @@ def _format_report(title: str, agent: Agent, context_after: int) -> None:
     cost = agent.usage.total_cost
     cost_str = "н/д" if cost is None else f"${cost:.6f}"
     print(f"--- {title} ---")
-    print(f"  сообщений в истории: {len(agent.history)}")
+    print(f"  сообщений в истории: {len(agent.history)} "
+          f"(свёрнуто в summary: {agent.conversation.summarized})")
     print(f"  summary: {'есть' if agent.conversation.summary else 'нет'} "
           f"({len(agent.conversation.summary)} символов)")
     print(f"  контекст в конце (оценка): {context_after} токенов")

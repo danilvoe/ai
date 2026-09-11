@@ -3,9 +3,9 @@
 `compression_scenarios.py` runs the same long dialog twice and compares:
 
 - **Without compression**: the full history goes into every request.
-- **With compression**: the last `keep_recent` messages are kept as-is, and the
-  rest is replaced by a `summary` that is substituted into the request instead of
-  the full history.
+- **With compression**: the full history is **kept on disk** (so the user can
+  still browse it), but old messages are folded into a `summary` that is
+  substituted into the request instead of the full history.
 
 It prints how the context, per-session tokens, and cost differ, and then asks a
 control question about a fact from the start of the dialog to compare answer
@@ -14,18 +14,22 @@ quality (did the agent retain the gist after compression?).
 ## What was added
 
 - `agent/compression.py` — `CompressionConfig`, `build_context_messages`
-  (summary + recent window), `build_summary_prompt` / `summarize_messages`
-  (LLM call to compress), `compress` (drop old messages, keep summary), and
-  `compressed_context_tokens`.
-- `agent/conversation.py` — a session now stores a separate `summary` field
-  next to `messages` (old array format still loads).
-- `agent/agent.py` — the agent builds the request from `summary + recent window`
-  and triggers compression after each turn when the window overgrows.
-- `agent/cli.py` — reads the `compression` section and shows its status.
+  (summary + fresh window), `build_summary_prompt` / `summarize_messages`
+  (LLM call to compress), `compress` (fold fresh messages into summary, keep
+  them on disk), and `compressed_context_tokens`.
+- `agent/conversation.py` — a session stores `summary`, a `summarized` counter
+  (how many leading messages are folded), and the full `messages` history. Old
+  array format and old `{summary, messages}` format still load.
+- `agent/agent.py` — the agent builds the request from `summary + fresh window`
+  and triggers compression after each turn when the fresh window overgrows.
+- `agent/cli.py` — reads the `compression` section, shows its status, and the
+  `history` command prints the **full** history, marking messages that were
+  folded into the summary.
 - `agent/llm_client.py` — `complete()` accepts `max_tokens` (for the summary).
 
-Config keys (in the `compression` section): `keep_recent` (last N messages kept
-as-is), `summarize_every` (compress when the window exceeds this), `max_tokens`.
+Config keys (in the `compression` section): `keep_recent` (how many fresh
+messages stay uncompressed), `summarize_every` (compress when the fresh window
+exceeds this), `max_tokens`.
 
 ## Run
 

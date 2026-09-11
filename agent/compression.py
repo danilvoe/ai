@@ -2,13 +2,12 @@
 
 Принцип работы:
 
-- Последние ``keep_recent`` сообщений хранятся "как есть".
-- Когда количество сообщений в окне превышает ``keep_recent``, самые старые из
-  них выносятся за пределы окна, а их краткое содержание запрашивается у LLM и
-  сохраняется в ``Conversation.summary`` отдельно от сообщений.
-- В запрос к модели подставляется ``[system: summary] + окно последних
-  сообщений`` вместо полной истории. Таким образом контекст не растёт
-  неограниченно, а токены экономятся.
+- Полная история хранится в ``Conversation.messages`` и доступна для просмотра.
+- Когда свежих (не свёрнутых) сообщений становится больше ``keep_recent``, их
+  краткое содержание запрашивается у LLM и дополняет ``Conversation.summary``.
+- В запрос к модели подставляется ``[system: summary] + свежие сообщения``
+  вместо полной истории: старые сообщения остаются на диске, но в запрос не
+  уходят. Так контекст не растёт неограниченно, а токены экономятся.
 """
 
 from dataclasses import dataclass
@@ -30,24 +29,24 @@ class CompressionConfig:
     """Настройки сжатия истории."""
 
     keep_recent: int = 10
-    """Сколько последних сообщений хранить без изменений."""
+    """Сколько последних свежих сообщений хранить без сжатия."""
     summarize_every: int = 10
-    """Через сколько сообщений в окне пересжимать старую часть."""
+    """Насколько свежих сообщений может накопиться до следующего сжатия."""
     max_tokens: int | None = None
     """Ограничение на длину summary (передаётся в запрос, если задано)."""
 
     @property
     def enabled(self) -> bool:
-        """Сжатие включено, если окно сообщений ограничено."""
+        """Сжатие включено, если окно свежих сообщений ограничено."""
         return self.keep_recent > 0
 
 
 def build_context_messages(conversation: Conversation) -> list[dict]:
     """Собирает сообщения для отправки в модель.
 
-    Если есть summary, он подставляется отдельным system-сообщением, а сами
-    сообщения окна идут следом. Это и есть "сжатая" история, которая уходит
-    в запрос вместо полной.
+    Если есть summary, он подставляется отдельным system-сообщением, а следом
+    идут только свежие (не свёрнутые) сообщения. Это и есть "сжатая" история,
+    которая уходит в запрос вместо полной.
     """
     messages: list[dict] = []
     if conversation.summary:
@@ -58,7 +57,7 @@ def build_context_messages(conversation: Conversation) -> list[dict]:
                 + conversation.summary,
             }
         )
-    messages.extend(conversation.messages)
+    messages.extend(conversation.recent_messages)
     return messages
 
 
@@ -105,21 +104,23 @@ def summarize_messages(
 
 
 def should_compress(conversation: Conversation, config: CompressionConfig) -> bool:
-    """Пора ли сжимать: сообщений в окне стало заметно больше keep_recent."""
-    return config.enabled and len(conversation.messages) > config.keep_recent + config.summarize_every
+    """Пора ли сжимать: свежих сообщений накопилось заметно больше keep_recent."""
+    return config.enabled and len(conversation.recent_messages) > config.keep_recent + config.summarize_every
 
 
 def compress(conversation: Conversation, client, config: CompressionConfig) -> bool:
-    """Сжимает историю: старые сообщения заменяются обновлённым summary.
+    """Сжимает историю: свежие сообщения сворачиваются в обновлённый summary.
 
-    Возвращает True, если сжатие реально выполнено (было что выносить).
+    Старые сообщения остаются в ``Conversation.messages``, а их количество
+    помечается в ``Conversation.summarized``. Возвращает True, если сжатие
+    реально выполнено (было что сворачивать).
     """
     if not should_compress(conversation, config):
         return False
 
     messages = conversation.messages
-    keep = messages[-config.keep_recent:]
-    to_summarize = messages[: len(messages) - config.keep_recent]
+    keep = len(conversation.recent_messages) - config.keep_recent
+    to_summarize = conversation.recent_messages[:keep]
     if not to_summarize:
         return False
 
@@ -129,14 +130,12 @@ def compress(conversation: Conversation, client, config: CompressionConfig) -> b
         old_summary=conversation.summary,
         max_tokens=config.max_tokens,
     )
-    conversation.set_summary(new_summary)
-    conversation._messages = keep
-    conversation.save()
+    conversation.set_summary(new_summary, summarized=conversation.summarized + len(to_summarize))
     return True
 
 
 def compressed_context_tokens(conversation: Conversation) -> int:
-    """Оценка токенов сжатого контекста: summary + окно сообщений."""
+    """Оценка токенов сжатого контекста: summary + свежие сообщения."""
     total = estimate_messages_tokens(build_context_messages(conversation))
     if conversation.summary:
         total += estimate_tokens(conversation.summary)
