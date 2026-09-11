@@ -40,7 +40,7 @@ def print_usage(agent: Agent) -> None:
         # Реальные входные токены, которые модель вернула в прошлом ответе.
         print(
             f"Токены хода: {last.total_tokens} "
-            f"(вход {last.prompt_tokens} [реальное значение из API], "
+            f"(вход {last.prompt_tokens}, "
             f"ответ {last.completion_tokens or last.response_tokens or 0})"
         )
     else:
@@ -54,7 +54,7 @@ def print_usage(agent: Agent) -> None:
     if real_prompt is not None:
         print(
             f"Токены за всю сессию: {real_prompt + (real_completion or 0)} "
-            f"(вход {real_prompt}, выход {real_completion or 0} — реальные значения)"
+            f"(вход {real_prompt}, выход {real_completion or 0})"
         )
     else:
         print(
