@@ -1,0 +1,55 @@
+"""HTTP-клиент для запросов к LLM через OpenAI-совместимый API."""
+
+import json
+import urllib.request
+from dataclasses import dataclass
+
+
+@dataclass
+class Completion:
+    """Ответ LLM: текст и информация об использовании токенов."""
+
+    content: str
+    model: str
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
+class LLMClient:
+    """Отправляет запросы к API и разбирает ответ."""
+
+    def __init__(self, config: dict) -> None:
+        self._config = config
+        self._url = config["base_url"].rstrip("/") + "/chat/completions"
+
+    def complete(self, messages: list[dict], temperature: float | None = None) -> Completion:
+        body = {
+            "model": self._config["model"],
+            "messages": messages,
+            "temperature": temperature
+            if temperature is not None
+            else self._config.get("temperature", 0.7),
+        }
+        request = urllib.request.Request(
+            self._url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)",
+                "Authorization": f"Bearer {self._config['api_key']}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(
+            request, timeout=self._config.get("timeout", 120)
+        ) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        choice = data["choices"][0]["message"]
+        usage = data.get("usage", {})
+        return Completion(
+            content=choice["content"],
+            model=data.get("model", self._config["model"]),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+        )
