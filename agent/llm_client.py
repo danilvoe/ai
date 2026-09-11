@@ -13,6 +13,7 @@ class Completion:
     model: str
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 class LLMClient:
@@ -21,6 +22,11 @@ class LLMClient:
     def __init__(self, config: dict) -> None:
         self._config = config
         self._url = config["base_url"].rstrip("/") + "/chat/completions"
+
+    @property
+    def config(self) -> dict:
+        """Конфигурация клиента, переданная при создании."""
+        return self._config
 
     def complete(self, messages: list[dict], temperature: float | None = None) -> Completion:
         body = {
@@ -52,4 +58,5 @@ class LLMClient:
             model=data.get("model", self._config["model"]),
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
         )

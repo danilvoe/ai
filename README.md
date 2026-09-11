@@ -1,3 +1,32 @@
+# Day 8: Token accounting
+
+`token_scenarios.py` counts tokens for the current request, the whole dialog
+history, and the model's answer, and shows how cost grows as the conversation
+progresses and what breaks when the context exceeds the model limit.
+
+## What was added
+
+- `agent/tokens.py` — local token estimation (`estimate_tokens`), per-turn and
+  cumulative usage/cost accounting, and `ContextOverflowError`.
+- `agent/agent.py` — records tokens/cost on every turn and raises
+  `ContextOverflowError` before sending if the dialog would exceed
+  `max_context_tokens`.
+- `agent/llm_client.py` — `Completion` now exposes `total_tokens`.
+- `agent/cli.py` — prints per-turn and per-session token/cost stats.
+
+Config keys: `max_context_tokens`, `input_cost_per_million`,
+`output_cost_per_million`.
+
+## Run
+
+```bash
+python3 token_scenarios.py          # offline: responses are simulated locally
+python3 token_scenarios.py --online # real API requests
+```
+
+The script compares a short dialog, a long dialog, and a dialog that overflows
+the context limit, printing how tokens and cost grow and what breaks on overflow.
+
 # Day 5: Model versions
 
 `model_comparison.py` sends one identical query to weak, medium, and strong models via Bothub. For every successful request it prints:

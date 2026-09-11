@@ -8,10 +8,32 @@ from .agent import Agent
 from .config import load_config
 from .conversation import SessionStore
 from .llm_client import LLMClient
+from .tokens import ContextOverflowError
 
 
 def build_agent(conversation) -> Agent:
-    return Agent(LLMClient(load_config()), conversation)
+    config = load_config()
+    client = LLMClient(config)
+    return Agent(client, conversation, max_context_tokens=config.get("max_context_tokens"))
+
+
+def print_usage(agent: Agent) -> None:
+    """Печатает токены и стоимость последнего хода и всей сессии."""
+    last = agent.usage.turns[-1]
+    print(
+        f"Токены хода: {last.total_tokens} "
+        f"(история {last.history_tokens}, запрос {last.request_tokens}, "
+        f"ответ {last.response_tokens or 0})"
+    )
+    print(
+        f"Токены за всю сессию: {agent.usage.total_tokens} "
+        f"(запросы {agent.usage.total_request_tokens}, ответы {agent.usage.total_response_tokens})"
+    )
+    if agent.usage.total_cost is None:
+        print("Стоимость сессии: н/д (укажите тарифы в config.json)")
+    else:
+        print(f"Стоимость сессии: ${agent.usage.total_cost:.6f}")
+    print()
 
 
 def pick_session(store: SessionStore) -> Agent:
@@ -74,8 +96,12 @@ def main() -> None:
         except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError) as exc:
             print(f"Ошибка: {exc}", file=sys.stderr)
             continue
+        except ContextOverflowError as exc:
+            print(f"Ошибка: {exc}", file=sys.stderr)
+            continue
 
         print(f"\nАгент: {reply.content}\n")
+        print_usage(agent)
 
 
 if __name__ == "__main__":
