@@ -36,15 +36,32 @@ def build_agent(conversation) -> Agent:
 def print_usage(agent: Agent) -> None:
     """Печатает токены и стоимость последнего хода и всей сессии."""
     last = agent.usage.turns[-1]
-    print(
-        f"Токены хода: {last.total_tokens} "
-        f"(история {last.history_tokens}, запрос {last.request_tokens}, "
-        f"ответ {last.response_tokens or 0})"
-    )
-    print(
-        f"Токены за всю сессию: {agent.usage.total_tokens} "
-        f"(запросы {agent.usage.total_request_tokens}, ответы {agent.usage.total_response_tokens})"
-    )
+    if last.prompt_tokens is not None:
+        # Реальные входные токены, которые модель вернула в прошлом ответе.
+        print(
+            f"Токены хода: {last.total_tokens} "
+            f"(вход {last.prompt_tokens} [реальное значение из API], "
+            f"ответ {last.completion_tokens or last.response_tokens or 0})"
+        )
+    else:
+        print(
+            f"Токены хода: {last.total_tokens} "
+            f"(история {last.history_tokens}, запрос {last.request_tokens}, "
+            f"ответ {last.response_tokens or 0})"
+        )
+    real_prompt = agent.usage.total_prompt_tokens
+    real_completion = agent.usage.total_completion_tokens
+    if real_prompt is not None:
+        print(
+            f"Токены за всю сессию: {real_prompt + (real_completion or 0)} "
+            f"(вход {real_prompt}, выход {real_completion or 0} — реальные значения)"
+        )
+    else:
+        print(
+            f"Токены за всю сессию: {agent.usage.total_tokens} "
+            f"(запросы {agent.usage.total_request_tokens}, "
+            f"ответы {agent.usage.total_response_tokens})"
+        )
     if agent.usage.total_cost is None:
         print("Стоимость сессии: н/д (укажите тарифы в config.json)")
     else:

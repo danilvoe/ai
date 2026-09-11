@@ -116,15 +116,22 @@ def _new_agent(config: dict, offline: bool, compression: CompressionConfig | Non
 def _format_report(title: str, agent: Agent, context_after: int) -> None:
     cost = agent.usage.total_cost
     cost_str = "н/д" if cost is None else f"${cost:.6f}"
+    real_prompt = agent.usage.total_prompt_tokens
+    real_completion = agent.usage.total_completion_tokens
     print(f"--- {title} ---")
     print(f"  сообщений в истории: {len(agent.history)} "
           f"(свёрнуто в summary: {agent.conversation.summarized})")
     print(f"  summary: {'есть' if agent.conversation.summary else 'нет'} "
           f"({len(agent.conversation.summary)} символов)")
     print(f"  контекст в конце (оценка): {context_after} токенов")
-    print(f"  токены за сессию (запросы): {agent.usage.total_request_tokens}")
-    print(f"  токены за сессию (ответы):  {agent.usage.total_response_tokens}")
-    print(f"  токены за сессию (всего):   {agent.usage.total_tokens}")
+    if real_prompt is not None:
+        print(f"  токены за сессию (вход):  {real_prompt} (реальное значение из API)")
+        print(f"  токены за сессию (выход): {real_completion or 0} (реальное значение)")
+        print(f"  токены за сессию (всего): {real_prompt + (real_completion or 0)}")
+    else:
+        print(f"  токены за сессию (запросы): {agent.usage.total_request_tokens}")
+        print(f"  токены за сессию (ответы):  {agent.usage.total_response_tokens}")
+        print(f"  токены за сессию (всего):   {agent.usage.total_tokens}")
     print(f"  стоимость сессии: {cost_str}")
     print()
 
@@ -244,11 +251,13 @@ def main() -> None:
     print(f"  со сжатием: {'факт сохранён' if ok_comp else 'факт утерян'} ({mode_comp})")
 
     print("\n=== Расход токенов (до/после) ===")
-    print(f"  без сжатия: {agent_plain.usage.total_request_tokens} токенов на запросы")
-    print(f"  со сжатием: {agent_compressed.usage.total_request_tokens} токенов на запросы")
-    saved = agent_plain.usage.total_request_tokens - agent_compressed.usage.total_request_tokens
-    ratio = (saved / agent_plain.usage.total_request_tokens * 100
-             if agent_plain.usage.total_request_tokens else 0)
+    # Реальные входные токены от модели (считает токенизатор), если доступны.
+    plain_in = agent_plain.usage.total_prompt_tokens or agent_plain.usage.total_request_tokens
+    comp_in = agent_compressed.usage.total_prompt_tokens or agent_compressed.usage.total_request_tokens
+    print(f"  без сжатия: {plain_in} токенов на запросы")
+    print(f"  со сжатием: {comp_in} токенов на запросы")
+    saved = plain_in - comp_in
+    ratio = (saved / plain_in * 100 if plain_in else 0)
     print(f"  экономия: {saved} токенов ({ratio:.1f}%)")
     print("\n  Служебные вызовы на сжатие (отдельно, не входят в 'запросы' выше):")
     print(f"    кол-во: {client_comp.summary_calls}")

@@ -68,6 +68,18 @@ class UsageReport:
         return self.total_request_tokens + self.total_response_tokens
 
     @property
+    def total_prompt_tokens(self) -> int | None:
+        """Реальные входные токены за сессию (если API их вернул)."""
+        values = [turn.prompt_tokens for turn in self.turns if turn.prompt_tokens is not None]
+        return sum(values) if values else None
+
+    @property
+    def total_completion_tokens(self) -> int | None:
+        """Реальные выходные токены за сессию (если API их вернул)."""
+        values = [turn.completion_tokens for turn in self.turns if turn.completion_tokens is not None]
+        return sum(values) if values else None
+
+    @property
     def total_cost(self) -> float | None:
         if self.input_price is None or self.output_price is None:
             return None
