@@ -22,6 +22,7 @@ class Agent:
         self._client = client
         self._conversation = conversation
         self._max_context_tokens = max_context_tokens
+        self._last_prompt_tokens: int | None = None
         self._usage = UsageReport(
             input_price=client.config.get("input_cost_per_million"),
             output_price=client.config.get("output_cost_per_million"),
@@ -43,8 +44,14 @@ class Agent:
 
     @property
     def context_tokens(self) -> int:
-        """Оценка токенов всей текущей истории диалога."""
-        return estimate_messages_tokens(self._conversation.messages)
+        """Токены текущей истории диалога.
+
+        Приоритет у реального значения prompt_tokens, которое модель
+        вернула в прошлом ответе: оно учитывает реальный токенизатор и не
+        занижает оценку. Пока таких данных нет — используется локальная
+        оценка (~4 символа на токен).
+        """
+        return self._last_prompt_tokens or estimate_messages_tokens(self._conversation.messages)
 
     def ask(self, user_request: str) -> Completion:
         history_tokens = self.context_tokens
@@ -63,6 +70,8 @@ class Agent:
         except Exception:
             self._conversation.pop_last()
             raise
+
+        self._last_prompt_tokens = reply.prompt_tokens
 
         response_tokens = (
             reply.completion_tokens
