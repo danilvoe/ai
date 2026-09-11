@@ -1,2 +1,5 @@
 config.json
+config.one.json
+config.json.save
+history/
 __pycache__/
