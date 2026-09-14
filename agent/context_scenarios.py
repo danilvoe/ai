@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
-"""Day 10: стратегии управления контекстом — сравниваем 3 стратегии без summary.
+"""Day 10: стратегии управления контекстом — живое сравнение без хардкода.
 
-Прогоняет один и тот же диалог под разными стратегиями управления контекстом и
-сравнивает, как растёт контекст, сколько токенов и стоимости уходит за сессию,
-и удерживает ли агент ранние факты (качество ответов). Используются стратегии:
+Запускает 4 агента (по одному на каждую стратегию и один без стратегии) и
+прогоняет через них один и тот же ввод пользователя в реальном времени. Для
+каждой реплики показывается ответ агента, размер контекста и накопленные
+токены — так видно, как стратегии по-разному управляют контекстом.
 
+Стратегии:
 1. **Sliding Window** — храним только последние N сообщений, остальное отбрасываем.
 2. **Sticky Facts (Key-Value Memory)** — важные данные выносим в блок ``facts``
-   (ключ-значение), который отправляется вместе с последними N сообщениями;
-   факты обновляются после каждого сообщения пользователя.
-3. **Branching** — сохраняем checkpoint, создаём от него независимые ветки,
-   продолжаем беседу в каждой отдельно и переключаемся между ними.
+   (ключ-значение), который отправляется вместе с последними N сообщениями.
+3. **Branching** — checkpoint, независимые ветки, переключение между ними.
 
-Для сравнения дополнительно прогоняется базовый вариант без стратегии (вся
-история уходит в запрос как есть). По умолчанию работает в офлайн-режиме
-(ответы имитируются локально), флаг --online отправляет реальные запросы.
+Команды (не являются репликами):
+- ``checkpoint``        — сохранить точку ветвления (только у Branching).
+- ``branch <имя>``      — создать и активировать ветку (Branching).
+- ``switch <имя>``      — переключить активную ветку (Branching).
+- ``facts``             — показать накопленные липкие факты (Sticky Facts).
+- ``status``            — сводка по всем стратегиям (контекст, токены, стоимость).
+- ``exit`` / ``quit``   — завершить.
+
+По умолчанию работает в офлайн-режиме (ответы имитируются локально), флаг
+--online отправляет реальные запросы к API.
 """
 
 import argparse
@@ -57,121 +64,119 @@ def build_client(config: dict, offline: bool) -> object:
     return FakeClient(config) if offline else LLMClient(config)
 
 
-def new_agent(config: dict, offline: bool, strategy: ContextStrategy | None):
-    """Создаёт агента в отдельной временной сессии."""
+def new_agent(config: dict, offline: bool, strategy: ContextStrategy | None) -> Agent:
+    """Создаёт агента для одной стратегии в отдельной временной сессии."""
     tmp = tempfile.TemporaryDirectory()
     conversation = SessionStore(Path(tmp.name)).create()
-    agent = Agent(
+    return Agent(
         build_client(config, offline),
         conversation,
         max_context_tokens=config.get("max_context_tokens"),
         compression=None,
         context_strategy=strategy,
     )
-    return agent
 
 
-# Ранние факты, которые должны удерживаться стратегиями до конца диалога.
-EARLY_FACTS = [
-    "Запомни: проект = Север",
-    "Цель: написать статью",
-    "Предпочтение: писать кратко",
-    "Решение: использовать FastAPI",
-]
+class Runner:
+    """Держит по одному агенту на каждую стратегию и прогоняет общий ввод."""
 
+    def __init__(self, config: dict, offline: bool, window: int) -> None:
+        self._offline = offline
+        self._agents: dict[str, Agent] = {
+            "БЕЗ стратегии": new_agent(config, offline, None),
+            "Sliding Window": new_agent(config, offline, SlidingWindowStrategy(size=window)),
+            "Sticky Facts": new_agent(
+                config, offline, StickyFactsStrategy(window_size=window)
+            ),
+            "Branching": new_agent(config, offline, BranchingStrategy()),
+        }
 
-def dialog_turns(turns: int) -> list[str]:
-    """Скрипт диалога: ранние факты + вопросы-наполнители."""
-    script = list(EARLY_FACTS)
-    script += [
-        f"Вопрос №{i}: детально объясни понятие '{'пример' * 5}'."
-        for i in range(1, turns - len(EARLY_FACTS) + 1)
-    ]
-    return script
+    @property
+    def agents(self) -> dict[str, Agent]:
+        return self._agents
 
+    def handle_command(self, command: str) -> bool:
+        """Обрабатывает служебную команду. Возвращает True, если это команда."""
+        word = command.strip().split(maxsplit=1)
+        verb = word[0].lower()
+        rest = word[1].strip() if len(word) > 1 else ""
 
-def run_dialog(config: dict, offline: bool, strategy: ContextStrategy | None, turns: int):
-    """Проводит диалог, возвращая агента и пошаговый рост контекста."""
-    agent = new_agent(config, offline, strategy)
-    growth: list[int] = []
-    stopped = False
-    for message in dialog_turns(turns):
-        try:
-            agent.ask(message)
-        except ContextOverflowError:
-            stopped = True
-            break
-        growth.append(agent.context_tokens)
-    return agent, growth, stopped
+        if verb in ("checkpoint", "чекпоинт"):
+            conv = self._agents["Branching"].conversation
+            count = conv.checkpoint()
+            print(f"  Branching: checkpoint сохранён ({count} сообщений в общей части).\n")
+            return True
+        if verb in ("branch", "ветв", "ветка"):
+            conv = self._agents["Branching"].conversation
+            if not rest:
+                print("  Укажите имя ветки: branch <имя>\n")
+            elif not conv.checkpoint:
+                print("  Сначала сохраните checkpoint.\n")
+            elif conv.create_branch(rest):
+                print(f"  Branching: создана и активирована ветка '{rest}'.\n")
+            else:
+                print(f"  Branching: не удалось создать ветку '{rest}'.\n")
+            return True
+        if verb in ("switch", "переключ", "переключить"):
+            conv = self._agents["Branching"].conversation
+            if not rest:
+                print("  Укажите имя ветки: switch <имя>\n")
+            elif conv.switch_branch(rest):
+                print(f"  Branching: активна ветка '{rest}'.\n")
+            else:
+                print(f"  Branching: ветка '{rest}' не найдена.\n")
+            return True
+        if verb in ("facts", "факт", "факты"):
+            facts = self._agents["Sticky Facts"].conversation.facts
+            print("  Липкие факты (Sticky Facts):")
+            if facts:
+                for key, value in facts.items():
+                    print(f"    - {key}: {value}")
+            else:
+                print("    (пока пусто)")
+            print()
+            return True
+        if verb in ("status", "сводка", "итог"):
+            self.print_status()
+            return True
+        return False
 
+    def ask_all(self, user_request: str) -> None:
+        """Отправляет реплику всем агентам и печатает сравнение."""
+        print(f"\nВы: {user_request}")
+        for title, agent in self._agents.items():
+            try:
+                reply = agent.ask(user_request)
+            except ContextOverflowError as exc:
+                print(f"  [{title}] Ошибка: {exc}")
+                continue
+            print(f"  --- {title} ---")
+            print(f"    Ответ: {reply.content}")
+            print(f"    Контекст: {agent.context_tokens} токенов, "
+                  f"история: {len(agent.history)} сообщений")
+            print(f"    Накоплено за сессию: {agent.usage.total_tokens} токенов, "
+                  f"стоимость: ${agent.usage.total_cost:.6f}"
+                  if agent.usage.total_cost is not None else
+                  f"    Накоплено за сессию: {agent.usage.total_tokens} токенов")
+            print()
 
-def context_contains(agent: Agent, text: str) -> bool:
-    """Есть ли текст в сообщениях, отправляемых в модель (для офлайн-проверки)."""
-    blob = "\n".join(m.get("content", "") for m in agent.context_messages)
-    return text.lower() in blob.lower()
-
-
-def report(title: str, agent: Agent, growth: list[int]) -> None:
-    """Печатает сводку по одной стратегии."""
-    cost = agent.usage.total_cost
-    cost_str = "н/д" if cost is None else f"${cost:.6f}"
-    print(f"--- {title} ---")
-    print(f"  сообщений в истории: {len(agent.history)}")
-    print(f"  контекст в конце (оценка): {agent.context_tokens} токенов")
-    print(f"  максимальный контекст за диалог: {max(growth)} токенов")
-    print(f"  токены за сессию (вход):  {agent.usage.total_request_tokens}")
-    print(f"  токены за сессию (ответы): {agent.usage.total_response_tokens}")
-    print(f"  токены за сессию (всего):  {agent.usage.total_tokens}")
-    print(f"  стоимость сессии: {cost_str}")
-    print()
-
-
-def run_quality_probe(agent: Agent, fact: str, offline: bool) -> tuple[bool, str]:
-    """Задаёт контрольный вопрос про ранний факт и оценивает сохранность."""
-    question = f"Какое кодовое имя было у проекта в начале диалога?"
-    try:
-        reply = agent.ask(question)
-    except ContextOverflowError:
-        return False, "не задан (переполнение контекста)"
-    if offline:
-        return context_contains(agent, fact), "offline (по сохранности факта в контексте)"
-    return fact.lower() in reply.content.lower(), "online (по наличию факта в ответе)"
-
-
-def run_branching_demo(config: dict, offline: bool) -> None:
-    """Демонстрирует стратегию Branching: checkpoint, 2 ветки, переключение."""
-    agent = new_agent(config, offline, BranchingStrategy())
-    conv = agent.conversation
-    print("=== Демонстрация стратегии Branching ===")
-    for message in EARLY_FACTS[:2]:
-        agent.ask(message)
-    print(f"  Общая часть: {len(conv.messages)} сообщений, "
-          f"контекст {agent.context_tokens} токенов.")
-
-    count = conv.checkpoint()
-    print(f"  Checkpoint сохранён: {count} сообщений в общей части.")
-
-    conv.create_branch("кратко")
-    agent.ask("Расскажи о проекте кратко, одним абзацем.")
-    print(f"  Ветка 'кратко': {len(conv.branches['кратко']['messages'])} сообщений.")
-
-    conv.create_branch("подробно")
-    agent.ask("Теперь распиши проект максимально подробно, с деталями.")
-    print(f"  Ветка 'подробно': {len(conv.branches['подробно']['messages'])} сообщений.")
-
-    print(f"  Активна ветка: {conv.active_branch} "
-          f"(контекст {agent.context_tokens} токенов).")
-
-    conv.switch_branch("кратко")
-    probe = "кратко"
-    print(f"  Переключаюсь на 'кратко' (контекст {agent.context_tokens} токенов).")
-    conv.switch_branch("подробно")
-    print(f"  Переключаюсь на 'подробно' (контекст {agent.context_tokens} токенов).")
-    print(f"  Ветки независимы: 'кратко' содержит факт о проекте — "
-          f"{context_contains(agent, 'Север')}.")
-    print(f"  Факт 'проект = Север' сохранён в общей части — "
-          f"{context_contains(agent, 'проект = Север')}.")
-    print()
+    def print_status(self) -> None:
+        """Сводка по всем стратегиям: контекст, токены, стоимость."""
+        print("\n=== Сводка по стратегиям ===")
+        for title, agent in self._agents.items():
+            cost = agent.usage.total_cost
+            cost_str = "н/д" if cost is None else f"${cost:.6f}"
+            conv = agent.conversation
+            branch_info = ""
+            if conv.has_branches:
+                branch_info = f", активна ветка '{conv.active_branch}'"
+            print(f"  {title}:")
+            print(f"    контекст: {agent.context_tokens} токенов, "
+                  f"история: {len(agent.history)} сообщений{branch_info}")
+            print(f"    токены за сессию (вход/всего): "
+                  f"{agent.usage.total_request_tokens}/{agent.usage.total_tokens}, "
+                  f"стоимость: {cost_str}")
+        print()
 
 
 def main() -> None:
@@ -179,10 +184,6 @@ def main() -> None:
     parser.add_argument(
         "--online", action="store_true",
         help="отправлять реальные запросы к API вместо локальной имитации",
-    )
-    parser.add_argument(
-        "--turns", type=int, default=20,
-        help="сколько всего реплик в диалоге (по умолчанию 20)",
     )
     parser.add_argument(
         "--window", type=int, default=6,
@@ -201,42 +202,26 @@ def main() -> None:
 
     offline = not args.online
     print(f"Режим: {'офлайн (имитация)' if offline else 'онлайн (реальный API)'}")
-    print(f"Диалог: {args.turns} реплик, окно: {args.window} сообщений.\n")
+    print(f"Окно: {args.window} сообщений для Sliding Window и Sticky Facts.")
+    print("Вводите реплики — они прогоняются через все стратегии сразу.")
+    print("Команды: checkpoint, branch <имя>, switch <имя>, facts, status, exit.\n")
 
-    strategies = [
-        ("БЕЗ стратегии (вся история)", None),
-        ("Sliding Window", SlidingWindowStrategy(size=args.window)),
-        ("Sticky Facts", StickyFactsStrategy(window_size=args.window)),
-        ("Branching", BranchingStrategy()),
-    ]
+    runner = Runner(config, offline, args.window)
 
-    agents = {}
-    for title, strategy in strategies:
-        agent, growth, stopped = run_dialog(config, offline, strategy, args.turns)
-        agents[title] = agent
-        report(title, agent, growth)
-        if stopped:
-            print(f"  (диалог прервался из-за переполнения контекста)\n")
-
-    print("=== Контрольный вопрос (качество: ранний факт 'проект = Север') ===")
-    for title, strategy in strategies:
-        agent = agents[title]
-        ok, mode = run_quality_probe(agent, "Север", offline)
-        print(f"  {title}: {'факт сохранён' if ok else 'факт утерян'} ({mode})")
-
-    print("\n=== Расход токенов на запросы (вход) ===")
-    for title, strategy in strategies:
-        agent = agents[title]
-        print(f"  {title}: {agent.usage.total_request_tokens} токенов")
-
-    print("\n=== Сравнение размеров контекста в конце ===")
-    for title, strategy in strategies:
-        agent = agents[title]
-        print(f"  {title}: {agent.context_tokens} токенов, "
-              f"{len(agent.history)} сообщений в истории")
-
-    print("\n" + "=" * 40)
-    run_branching_demo(config, offline)
+    while True:
+        try:
+            line = input("Вы: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nДо свидания!")
+            break
+        if not line:
+            continue
+        if line.lower() in ("exit", "quit"):
+            print("До свидания!")
+            break
+        if runner.handle_command(line):
+            continue
+        runner.ask_all(line)
 
 
 if __name__ == "__main__":

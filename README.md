@@ -38,16 +38,18 @@ Config keys (in the `context` section): `strategy`
 ## Run
 
 ```bash
-python3 context_scenarios.py          # offline: responses are simulated locally
-python3 context_scenarios.py --online # real API requests, real quality check
-python3 context_scenarios.py --turns 32 --window 6   # longer dialog
+cd ai_advent && python3 -m agent.context_scenarios          # offline (responses simulated)
+cd ai_advent && python3 -m agent.context_scenarios --online # real API requests
 ```
 
-The offline run compares token usage, final context size, and a control question
-about an early fact (does it survive under each strategy?): Sliding Window drops
-it, Sticky Facts keeps it in the `facts` block, Branching keeps it in the shared
-checkpoint. It then demonstrates branching live: save a checkpoint, fork two
-branches, continue each independently, and switch between them.
+Run it from the project root with `python3 -m agent.context_scenarios`. It starts
+four agents (one per strategy plus a no-strategy baseline) and feeds every line
+you type through all of them at once, so you can watch how the context, per-turn
+tokens, and cost diverge. There is no hardcoded dialog — you drive it live.
+
+Commands (not sent to the model): `checkpoint`, `branch <name>`,
+`switch <name>` (Branching only), `facts` (show the Sticky Facts block),
+`status` (summary across all strategies), `exit`/`quit`.
 
 # Day 9: Context management — history compression
 
