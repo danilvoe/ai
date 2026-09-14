@@ -7,6 +7,7 @@ import urllib.error
 from .agent import Agent
 from .compression import CompressionConfig
 from .config import load_config
+from .context import strategy_from_config
 from .conversation import SessionStore
 from .llm_client import LLMClient
 from .tokens import ContextOverflowError
@@ -30,6 +31,7 @@ def build_agent(conversation) -> Agent:
         conversation,
         max_context_tokens=config.get("max_context_tokens"),
         compression=_compression_from_config(config),
+        context_strategy=strategy_from_config(config),
     )
 
 
@@ -112,6 +114,70 @@ def pick_session(store: SessionStore) -> Agent:
     return build_agent(conversation)
 
 
+def print_context_status(agent: Agent) -> None:
+    """Печатает активную стратегию управления контекстом и состояние веток."""
+    strategy = agent.context_strategy
+    if strategy is not None:
+        print(f"Стратегия управления контекстом: {strategy.label} ({strategy.name}).")
+    else:
+        print("Стратегия управления контекстом: нет (вся история как есть).")
+    conv = agent.conversation
+    if conv.facts:
+        print("Липкие факты:")
+        for key, value in conv.facts.items():
+            print(f"  - {key}: {value}")
+    if conv.has_branches:
+        active = conv.active_branch
+        print(f"Общая часть (checkpoint): {len(conv.messages) - _branch_len(conv)} сообщений.")
+        for branch_id, branch in conv.branches.items():
+            marker = " (активна)" if branch_id == active else ""
+            print(f"  - {branch_id}: {len(branch['messages'])} сообщений{marker}")
+    print()
+
+
+def _branch_len(conv) -> int:
+    """Число сообщений активной ветки (для заголовка checkpoint)."""
+    if conv.active_branch is not None:
+        return len(conv.branches[conv.active_branch]["messages"])
+    return 0
+
+
+def _handle_branch_command(agent: Agent, command: str) -> None:
+    """Обрабатывает команды ветвления: checkpoint, branch <name>, switch <name>."""
+    conv = agent.conversation
+    parts = command.strip().split(maxsplit=1)
+    verb = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if verb in ("checkpoint", "чекпоинт"):
+        count = conv.checkpoint()
+        print(f"Checkpoint сохранён: {count} сообщений в общей части.\n")
+        return
+
+    if verb in ("branch", "ветв", "ветка"):
+        if not rest:
+            print("Укажите имя ветки: branch <имя>\n")
+            return
+        if not conv.checkpoint:
+            print("Сначала сохраните checkpoint (команда checkpoint).\n")
+            return
+        if conv.create_branch(rest):
+            print(f"Создана и активирована ветка: {rest}\n")
+        else:
+            print(f"Не удалось создать ветку {rest} (уже существует или нет checkpoint).\n")
+        return
+
+    if verb in ("switch", "переключ", "переключить"):
+        if not rest:
+            print("Укажите имя ветки: switch <имя>\n")
+            return
+        if conv.switch_branch(rest):
+            print(f"Активна ветка: {rest}\n")
+        else:
+            print(f"Ветка {rest} не найдена.\n")
+        return
+
+
 def main() -> None:
     store = SessionStore()
     try:
@@ -122,6 +188,11 @@ def main() -> None:
 
     if agent.history:
         print(f"Восстановлен контекст: {len(agent.history)} сообщений.")
+    if agent.context_strategy is not None:
+        print(
+            f"Стратегия управления контекстом: "
+            f"{agent.context_strategy.label} ({agent.context_strategy.name})."
+        )
     if agent.compression.enabled:
         conv = agent.conversation
         if conv.summary:
@@ -151,6 +222,12 @@ def main() -> None:
             continue
         if user_request.lower() in ("history", "история", "показать историю"):
             print_history(agent)
+            continue
+        if user_request.lower() in ("context", "контекст", "факты", "факт"):
+            print_context_status(agent)
+            continue
+        if user_request.lower().startswith(("checkpoint", "чекпоинт", "ветв")):
+            _handle_branch_command(agent, user_request)
             continue
 
         try:

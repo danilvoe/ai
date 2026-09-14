@@ -6,6 +6,13 @@
 сообщения``, но сами старые сообщения не удаляются, а остаются в истории.
 Счётчик ``summarized`` отмечает, сколько первых сообщений уже свернуто в
 summary (см. agent/compression.py).
+
+Помимо этого сессия поддерживает данные для стратегий управления контекстом
+(см. agent/context.py):
+
+- ``facts`` — блок "липких фактов" (ключ-значение) с важными данными диалога;
+- ``branches``/``checkpoint`` — ветвление диалога: общая часть до чекпоинта
+  плюс независимые ветки, между которыми можно переключаться.
 """
 
 import json
@@ -36,7 +43,11 @@ class Conversation:
         {
             "summary": "...",        # краткое содержание старой части
             "summarized": 42,        # сколько первых сообщений свернуто в summary
-            "messages": [...],       # полная история (для просмотра)
+            "messages": [...],       # активная ветка диалога (для просмотра)
+            "facts": {...},          # липкие факты (ключ-значение)
+            "checkpoint": [...],     # общая часть диалога до точки ветвления
+            "branches": {...},       # независимые ветки (id -> {name, messages})
+            "active_branch": "id",   # какая ветка сейчас активна
         }
 
     Формат старой версии (простой массив сообщений или объект без ``summarized``)
@@ -49,6 +60,10 @@ class Conversation:
         self._messages: list[dict] = []
         self._summary = ""
         self._summarized = 0
+        self._facts: dict[str, str] = {}
+        self._checkpoint: list[dict] = []
+        self._branches: dict[str, dict] = {}
+        self._active_branch: str | None = None
         self.load()
 
     @property
@@ -57,8 +72,10 @@ class Conversation:
 
     @property
     def messages(self) -> list[dict]:
-        """Полная история диалога (все сообщения, включая свёрнутые)."""
-        return self._messages
+        """Активный диалог: общая часть (checkpoint) + сообщения активной ветки."""
+        if self._active_branch is not None:
+            return list(self._checkpoint) + list(self._branches[self._active_branch]["messages"])
+        return list(self._checkpoint)
 
     @property
     def summary(self) -> str:
@@ -73,34 +90,68 @@ class Conversation:
     @property
     def recent_messages(self) -> list[dict]:
         """Сообщения, которые ещё не свёрнуты в summary (свежее окно)."""
-        return self._messages[self._summarized:]
+        return self.messages[self._summarized:]
+
+    @property
+    def facts(self) -> dict[str, str]:
+        """Блок "липких фактов" (ключ-значение), накопленных за диалог."""
+        return dict(self._facts)
+
+    @property
+    def active_branch(self) -> str | None:
+        """Имя активной ветки диалога (None, если ветвление не начато)."""
+        return self._active_branch
+
+    @property
+    def branches(self) -> dict[str, dict]:
+        """Все ветки диалога: id -> {name, messages} (без общих сообщений)."""
+        return {
+            branch_id: {"name": branch["name"], "messages": list(branch["messages"])}
+            for branch_id, branch in self._branches.items()
+        }
+
+    @property
+    def has_branches(self) -> bool:
+        """Есть ли в диалоге созданные ветки."""
+        return bool(self._branches)
+
+    def _reset(self) -> None:
+        self._summary = ""
+        self._summarized = 0
+        self._facts = {}
+        self._checkpoint = []
+        self._branches = {}
+        self._active_branch = None
 
     def load(self) -> None:
         """Загружает историю из JSON-файла сессии."""
         if not self._path.exists():
-            self._messages = []
-            self._summary = ""
-            self._summarized = 0
+            self._reset()
             return
         try:
             with self._path.open(encoding="utf-8") as file:
                 data = json.load(file)
         except (OSError, json.JSONDecodeError):
-            self._messages = []
-            self._summary = ""
-            self._summarized = 0
+            self._reset()
             return
 
         if isinstance(data, dict):
             self._summary = data.get("summary", "") or ""
             self._summarized = data.get("summarized", 0) or 0
-            self._messages = data.get("messages", []) or []
-            if self._summarized > len(self._messages):
-                self._summarized = len(self._messages)
+            self._facts = data.get("facts", {}) or {}
+            self._branches = data.get("branches", {}) or {}
+            self._active_branch = data.get("active_branch")
+            checkpoint = data.get("checkpoint")
+            messages = data.get("messages", []) or []
+            # Старый формат не хранит checkpoint: вся история в messages.
+            self._checkpoint = checkpoint if checkpoint is not None else messages
+            if self._active_branch and self._active_branch not in self._branches:
+                self._active_branch = None
+            if self._summarized > len(self.messages):
+                self._summarized = len(self.messages)
         else:
-            self._summary = ""
-            self._summarized = 0
-            self._messages = data
+            self._reset()
+            self._checkpoint = data
 
     def save(self) -> None:
         """Сохраняет историю в JSON-файл сессии."""
@@ -110,7 +161,11 @@ class Conversation:
                 {
                     "summary": self._summary,
                     "summarized": self._summarized,
-                    "messages": self._messages,
+                    "messages": self.messages,
+                    "facts": self._facts,
+                    "checkpoint": self._checkpoint,
+                    "branches": self._branches,
+                    "active_branch": self._active_branch,
                 },
                 file,
                 ensure_ascii=False,
@@ -118,8 +173,12 @@ class Conversation:
             )
 
     def append(self, role: str, content: str) -> None:
-        """Добавляет сообщение и сохраняет историю."""
-        self._messages.append({"role": role, "content": content})
+        """Добавляет сообщение в активную ветку (или общую часть) и сохраняет."""
+        message = {"role": role, "content": content}
+        if self._active_branch is not None:
+            self._branches[self._active_branch]["messages"].append(message)
+        else:
+            self._checkpoint.append(message)
         self._trim()
         self.save()
 
@@ -130,29 +189,101 @@ class Conversation:
         """
         self._summary = summary
         if summarized is not None:
-            self._summarized = min(max(0, summarized), len(self._messages))
+            self._summarized = min(max(0, summarized), len(self.messages))
         self.save()
 
     def pop_last(self) -> None:
-        """Удаляет последнее сообщение и сохраняет историю."""
-        if self._messages:
-            self._messages.pop()
+        """Удаляет последнее сообщение активной ветки и сохраняет."""
+        if self._active_branch is not None:
+            branch = self._branches[self._active_branch]
+            if branch["messages"]:
+                branch["messages"].pop()
+                self.save()
+        elif self._checkpoint:
+            self._checkpoint.pop()
             self.save()
 
     def clear(self) -> None:
-        """Очищает историю и summary сессии."""
-        self._messages = []
-        self._summary = ""
-        self._summarized = 0
+        """Очищает историю, summary, факты и ветки сессии."""
+        self._reset()
         self.save()
 
+    def trim_to(self, keep: int) -> None:
+        """Жёстко отбрасывает всё, кроме последних ``keep`` сообщений (без summary).
+
+        Используется стратегией Sliding Window: старые сообщения не просто не
+        отправляются, а физически удаляются из активной ветки диалога.
+        """
+        if self._active_branch is not None:
+            branch = self._branches[self._active_branch]
+            total = len(self._checkpoint) + len(branch["messages"])
+            if total <= keep:
+                return
+            to_remove = total - keep
+            if len(branch["messages"]) >= to_remove:
+                branch["messages"] = branch["messages"][to_remove:]
+            else:
+                remainder = to_remove - len(branch["messages"])
+                branch["messages"] = []
+                self._checkpoint = self._checkpoint[remainder:]
+        else:
+            if len(self._checkpoint) > keep:
+                self._checkpoint = self._checkpoint[-keep:]
+        self.save()
+
+    def set_fact(self, key: str, value: str) -> None:
+        """Записывает один липкий факт и сохраняет."""
+        self._facts[key] = value
+        self.save()
+
+    def update_facts(self, facts: dict[str, str]) -> None:
+        """Добавляет/обновляет несколько липких фактов и сохраняет."""
+        if facts:
+            self._facts.update(facts)
+            self.save()
+
+    def checkpoint(self) -> int:
+        """Сохраняет текущее состояние как общую точку ветвления.
+
+        Все сообщения становятся общим префиксом (checkpoint), существующие
+        ветки сбрасываются. Возвращает число сообщений в общей части.
+        """
+        self._checkpoint = self.messages
+        self._branches = {}
+        self._active_branch = None
+        self._summarized = 0
+        self.save()
+        return len(self._checkpoint)
+
+    def create_branch(self, name: str) -> bool:
+        """Создаёт независимую ветку от точки ветвления и переключается на неё.
+
+        Каждая ветка начинается с чистой общей части (checkpoint). Возвращает
+        False, если checkpoint ещё не создан, имя пустое или ветка уже есть.
+        """
+        if not self._checkpoint or not name or name in self._branches:
+            return False
+        self._branches[name] = {"name": name, "messages": []}
+        self._active_branch = name
+        self.save()
+        return True
+
+    def switch_branch(self, name: str) -> bool:
+        """Переключает активную ветку. Возвращает False, если такой ветки нет."""
+        if name not in self._branches:
+            return False
+        self._active_branch = name
+        self.save()
+        return True
+
     def _trim(self) -> None:
-        """Обрезает историю до последних MAX_MESSAGES сообщений."""
-        if len(self._messages) > MAX_MESSAGES:
-            excess = len(self._messages) - MAX_MESSAGES
-            # Свёрнутые сообщения отбрасываем в первую очередь.
-            self._summarized = max(0, self._summarized - excess)
-            self._messages = self._messages[-MAX_MESSAGES:]
+        """Обрезает активную ветку до последних MAX_MESSAGES сообщений."""
+        total = len(self.messages)
+        if total <= MAX_MESSAGES:
+            return
+        self.trim_to(MAX_MESSAGES)
+        if self._summarized > MAX_MESSAGES:
+            self._summarized = MAX_MESSAGES
 
 
 class SessionStore:

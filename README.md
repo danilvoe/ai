@@ -1,3 +1,54 @@
+# Day 10: Context management — strategies without summary
+
+`context_scenarios.py` runs the same dialog under three different context-management
+strategies (and a no-strategy baseline) and compares how the context grows, how many
+tokens/cost the session uses, and whether the agent still retains early facts.
+
+- **Sliding Window** — keeps only the last N messages; everything older is
+  **discarded** (not just hidden from the request).
+- **Sticky Facts (Key-Value Memory)** — important data (goal, constraints,
+  preferences, decisions, agreements) is pulled into a `facts` block
+  (key-value) that is sent together with the last N messages. Facts are updated
+  after every user message.
+- **Branching** — a `checkpoint` is saved, independent dialog branches are forked
+  from it, the conversation continues separately in each branch, and you switch
+  between branches. The common part (checkpoint) stays shared, so early facts
+  survive.
+
+## What was added
+
+- `agent/context.py` — `ContextStrategy` (base), `SlidingWindowStrategy`,
+  `StickyFactsStrategy`, `BranchingStrategy`, `extract_facts_from_text`
+  (deterministic local fact extractor) and `strategy_from_config`.
+- `agent/conversation.py` — a session now also stores `facts` (key-value) and the
+  branching state: `checkpoint` (shared prefix), `branches` (id -> messages),
+  `active_branch`. New methods: `set_fact`, `update_facts`, `trim_to`,
+  `checkpoint`, `create_branch`, `switch_branch`. Old formats still load.
+- `agent/agent.py` — accepts `context_strategy`; the request is built from the
+  strategy's `build_messages`, and `on_user_message`/`on_reply` hooks run after
+  each turn (fact extraction, window trimming).
+- `agent/cli.py` — reads the `context` section, shows the active strategy, and
+  adds commands: `context` (show facts/branches), `checkpoint`,
+  `branch <name>`, `switch <name>`.
+
+Config keys (in the `context` section): `strategy`
+(`sliding_window` | `sticky_facts` | `branching`), `size` / `window_size`,
+`max_facts`.
+
+## Run
+
+```bash
+python3 context_scenarios.py          # offline: responses are simulated locally
+python3 context_scenarios.py --online # real API requests, real quality check
+python3 context_scenarios.py --turns 32 --window 6   # longer dialog
+```
+
+The offline run compares token usage, final context size, and a control question
+about an early fact (does it survive under each strategy?): Sliding Window drops
+it, Sticky Facts keeps it in the `facts` block, Branching keeps it in the shared
+checkpoint. It then demonstrates branching live: save a checkpoint, fork two
+branches, continue each independently, and switch between them.
+
 # Day 9: Context management — history compression
 
 `compression_scenarios.py` runs the same long dialog twice and compares:

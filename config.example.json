@@ -8,6 +8,12 @@
     "summarize_every": 10,
     "max_tokens": 400
   },
+  "context": {
+    "strategy": "sticky_facts",
+    "window_size": 10,
+    "max_facts": 30,
+    "size": 10
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [
