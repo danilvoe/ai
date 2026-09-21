@@ -195,6 +195,7 @@ class TaskState:
         previous = self.stage
         self.stage = next_stages[0]
         self.completed = False
+        self.step += 1
         self._record(f"{previous} -> {self.stage}")
         return self.stage
 
@@ -220,6 +221,7 @@ class TaskState:
             previous = self.stage
             self.stage = target
             self.completed = False
+            self.step += 1
             self._record(f"{previous} -> {self.stage}")
         return self.stage
 
