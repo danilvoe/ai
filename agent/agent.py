@@ -241,7 +241,11 @@ class Agent:
         task = self._task
         if task is None or not task.auto_advance or task.is_done:
             return
-        check_messages = task.completion_check_messages(user_request, assistant_reply)
+        check_messages = task.completion_check_messages(
+            user_request,
+            assistant_reply,
+            recent_messages=self._conversation.messages,
+        )
         if not check_messages:
             return
         try:

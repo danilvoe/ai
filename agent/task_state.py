@@ -69,14 +69,17 @@ COMPLETION_PROMPT = (
     "Ты проверяешь, полностью ли выполнено ожидаемое действие текущего этапа задачи.\n"
     "Текущий этап: {stage} ({stage_label}).\n"
     "Ожидаемое действие: {expected_action}.\n\n"
+    "Недавний ход диалога (последние сообщения):\n{recent}\n\n"
     "Последний запрос пользователя:\n{user_request}\n\n"
     "Твой последний ответ:\n{assistant_reply}\n\n"
     "Ответь «да» ТОЛЬКО если ожидаемое действие выполнено полностью, без пробелов:\n"
     "- результат готов и заполнен реальными данными пользователя;\n"
     "- не осталось открытых вопросов, не требуются дополнительные данные;\n"
     "- это финальный результат этапа, а не черновик, шаблон или список вопросов.\n"
+    "Учитывай весь недавний диалог: если в предыдущих сообщениях результат уже "
+    "выдан и одобрен пользователем, а последний ход лишь подтверждает это — отвечай «да».\n"
     "Если ассистент только уточняет детали, задаёт вопросы, предложил шаблон/черновик, "
-    "сформировал план или ждёт данные — отвечай «нет».\n"
+    "сформировал план и ждёт данных или решение пользователя — отвечай «нет».\n"
     "Ответь ровно одним словом: «да» или «нет». Больше ничего не пиши."
 )
 
@@ -466,19 +469,22 @@ class TaskStateMachine:
         """System-сообщение с текущим состоянием задачи."""
         return self._state.system_message()
 
-    def completion_check_messages(self, user_request: str, assistant_reply: str) -> list[dict]:
+    def completion_check_messages(self, user_request: str, assistant_reply: str,
+                                  recent_messages: list[dict] | None = None) -> list[dict]:
         """Сообщения короткой проверки: выполнено ли ожидаемое действие этапа.
 
-        Возвращает пустой список, если задачи нет или она завершена — тогда
-        проверять нечего. Иначе возвращает system+user сообщения для модели,
-        ответ которых разбирается через :func:`parse_completion_verdict`.
+        Включает не только последний ход, но и несколько недавних сообщений
+        диалога, чтобы модель видела ранее выданный результат и его одобрение.
+        Возвращает пустой список, если задачи нет или она завершена.
         """
         if not self.has_task() or self._state.is_done():
             return []
+        recent = self._format_recent(recent_messages or [])
         content = COMPLETION_PROMPT.format(
             stage=self._state.stage,
             stage_label=self._state.stage_label(),
             expected_action=self._state.expected_action or "не задано",
+            recent=recent or "—",
             user_request=user_request,
             assistant_reply=assistant_reply,
         )
@@ -486,6 +492,16 @@ class TaskStateMachine:
             {"role": "system", "content": _COMPLETION_MARKER},
             {"role": "user", "content": content},
         ]
+
+    @staticmethod
+    def _format_recent(messages: list[dict]) -> str:
+        """Сворачивает недавние сообщения в компактную текстовую стенограмму."""
+        lines = []
+        for message in messages[-6:]:
+            role = message.get("role")
+            content = str(message.get("content", ""))
+            lines.append(f"{role}: {content[:1200]}")
+        return "\n".join(lines)
 
     def summarize(self) -> str:
         """Краткая сводка состояния задачи."""
