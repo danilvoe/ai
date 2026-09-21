@@ -22,6 +22,9 @@
     "enabled": true,
     "profiles_path": "history/profiles.json"
   },
+  "task": {
+    "enabled": true
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

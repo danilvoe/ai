@@ -1,3 +1,56 @@
+# Day 13: Task state as a finite state machine
+
+`task_scenarios.py` makes the agent's **task state** formal instead of a free
+string. The current task is described by a finite state machine with three
+fields:
+
+- **Stage** (`stage`) — where the task is right now: `planning → execution →
+  validation → done`.
+- **Current step** (`step`) — the step number within the stage.
+- **Expected action** (`expected_action`) — what the agent must do next.
+
+Stages are transitions of an automaton (`TRANSITIONS` in `agent/task_state.py`):
+you cannot skip a stage or go back via an illegal transition (e.g. `planning →
+validation` is rejected). If validation fails, the automaton allows a legal
+rollback `validation → execution`, then `validation → done`.
+
+**Pause is allowed at any stage**: `pause()` just flips the flag, it never
+breaks the state machine. **Resume continues from the same place** — the task
+description, stage and expected action stay in the state and are re-injected as
+a system message, so the agent needs no repeated explanations.
+
+## What was added
+
+- `agent/task_state.py` — `TaskState` (stage/step/expected_action/description/
+  paused/log) and `TaskStateMachine` (wraps the state, validates transitions,
+  `system_message()`, `summarize()`).
+- `agent/agent.py` — accepts `task`; the state's system message is inserted
+  after the profile and counted in `context_tokens`. `save_task()` persists the
+  state into the session.
+- `agent/conversation.py` — stores a `task` block in the session JSON, so the
+  state survives a restart.
+- `agent/cli.py` — reads the `task` section and adds commands: `/task`,
+  `/task_new <описание>`, `/task_next`, `/task_stage <этап>`, `/task_step <N>`,
+  `/task_expected <действие>`, `/task_pause`, `/task_resume`, `/task_done`,
+  `/task_clear`.
+- `agent/task_scenarios.py` — live or demo (`--demo`) scenario that walks a task
+  through its full lifecycle, shows an illegal transition being rejected, a
+  pause and a resume without repeated explanations.
+
+Config key (in the `task` section): `enabled`.
+
+## Run
+
+```bash
+cd ai_advent && python3 -m agent.task_scenarios --demo   # fixed scenario, offline
+cd ai_advent && python3 -m agent.task_scenarios          # live input, offline
+cd ai_advent && python3 -m agent.task_scenarios --online # real API requests
+```
+
+Commands (not sent to the model): `task`, `task_new <описание>`,
+`task_next`, `task_stage <этап>`, `task_step <N>`, `task_expected <действие>`,
+`task_pause`, `task_resume`, `task_done`, `task_clear`, `context`, `exit`.
+
 # Day 12: Personalization of the assistant — user profile over the memory model
 
 `personalization_scenarios.py` adds a **user profile** layer on top of the memory

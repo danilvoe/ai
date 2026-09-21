@@ -11,6 +11,7 @@ from .conversation import Conversation, SessionStore
 from .llm_client import Completion, LLMClient
 from .memory import MemoryLayers
 from .personalization import Personalization
+from .task_state import TaskStateMachine
 from .tokens import (
     ContextOverflowError,
     UsageReport,
@@ -39,6 +40,12 @@ class Agent:
     Если задан ``personalization`` (см. agent/personalization.py), активный
     профиль пользователя автоматически подмешивается к каждому запросу:
     его system-сообщение вставляется первым и учитывается в контексте.
+
+    Если задан ``task`` (см. agent/task_state.py), агент держит состояние
+    текущей задачи как конечный автомат (этап / шаг / ожидаемое действие).
+    Состояние подмешивается к запросу в виде system-сообщения и сохраняется
+    в сессию, поэтому при паузе/возобновлении задача продолжается без
+    повторных объяснений.
     """
 
     def __init__(
@@ -50,6 +57,7 @@ class Agent:
         context_strategy: ContextStrategy | None = None,
         memory: MemoryLayers | None = None,
         personalization: Personalization | None = None,
+        task: TaskStateMachine | None = None,
     ) -> None:
         self._client = client
         self._conversation = conversation
@@ -58,6 +66,7 @@ class Agent:
         self._context_strategy = context_strategy
         self._memory = memory
         self._personalization = personalization
+        self._task = task
         self._last_prompt_tokens: int | None = None
         self._usage = UsageReport(
             input_price=client.config.get("input_cost_per_million"),
@@ -99,6 +108,16 @@ class Agent:
         return self._personalization
 
     @property
+    def task(self) -> TaskStateMachine | None:
+        """Конечный автомат состояния задачи (None — состояние не используется)."""
+        return self._task
+
+    def save_task(self) -> None:
+        """Сохраняет текущее состояние задачи в сессию (чтобы оно пережило перезапуск)."""
+        if self._task is not None:
+            self._conversation.set_task(self._task.to_dict())
+
+    @property
     def profile_prompt(self) -> str:
         """System-сообщение активного профиля (пусто, если профиля нет/пуст)."""
         if self._personalization is None:
@@ -108,6 +127,15 @@ class Agent:
     def _profile_messages(self) -> list[dict]:
         """Список system-сообщений активного профиля (пусто, если профиль пуст)."""
         prompt = self.profile_prompt
+        if not prompt:
+            return []
+        return [{"role": "system", "content": prompt}]
+
+    def _task_messages(self) -> list[dict]:
+        """Список system-сообщений состояния задачи (пусто, если задача пуста)."""
+        if self._task is None:
+            return []
+        prompt = self._task.system_message()
         if not prompt:
             return []
         return [{"role": "system", "content": prompt}]
@@ -122,6 +150,8 @@ class Agent:
         system-сообщений из всех слоёв памяти (см. agent/memory.py).
         Если задана персонализация, её профиль вставляется первым — он идёт
         раньше памяти, так как задаёт общий стиль и ограничения.
+        Если задано состояние задачи, оно вставляется следом за профилем —
+        это текущая цель, поверх стиля.
         """
         if self._context_strategy is not None:
             messages = self._context_strategy.build_messages(self._conversation)
@@ -129,7 +159,7 @@ class Agent:
             messages = build_context_messages(self._conversation)
         if self._memory is not None:
             messages = self._memory.build_memory_context() + messages
-        return self._profile_messages() + messages
+        return self._profile_messages() + self._task_messages() + messages
 
     @property
     def context_tokens(self) -> int:
@@ -150,6 +180,7 @@ class Agent:
         if self._memory is not None:
             tokens += estimate_messages_tokens(self._memory.build_memory_context())
         tokens += estimate_messages_tokens(self._profile_messages())
+        tokens += estimate_messages_tokens(self._task_messages())
         return tokens
 
     def ask(self, user_request: str) -> Completion:

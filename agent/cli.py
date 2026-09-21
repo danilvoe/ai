@@ -12,6 +12,7 @@ from .conversation import SessionStore
 from .llm_client import LLMClient
 from .memory import LONG_TERM_KINDS, MemoryLayers
 from .personalization import PREFERENCE_GROUPS, Personalization, UserProfile
+from .task_state import TaskStateMachine
 from .tokens import ContextOverflowError
 
 
@@ -36,7 +37,17 @@ def build_agent(conversation) -> Agent:
         context_strategy=strategy_from_config(config),
         memory=_memory_from_config(conversation),
         personalization=_personalization_from_config(),
+        task=_task_from_config(conversation),
     )
+
+
+def _task_from_config(conversation) -> TaskStateMachine | None:
+    """Создаёт конечный автомат состояния задачи из секции ``task`` (None — выключен)."""
+    config = load_config()
+    section = config.get("task", {}) or {}
+    if not section.get("enabled", False):
+        return None
+    return TaskStateMachine.from_dict(conversation.task)
 
 
 def _personalization_from_config() -> Personalization | None:
@@ -229,6 +240,129 @@ def _handle_memory_command(agent: Agent, command: str) -> bool:
     if verb in ("clearworking", "clear_working", "новая_задача", "сменить_задачу"):
         memory.working.clear()
         print("Рабочая память очищена (текущая задача завершена).\n")
+        return True
+
+    return False
+
+
+def print_task_status(agent: Agent) -> None:
+    """Печатает формализованное состояние текущей задачи (конечный автомат)."""
+    task = agent.task
+    if task is None:
+        print("Состояние задачи: выключено (см. секцию task в config.json).\n")
+        return
+    if not task.has_task():
+        print("Состояние задачи: нет активной задачи (команда /task_new <описание>).\n")
+        return
+    print(f"Состояние задачи ({task.stage}):")
+    for line in task.summarize().splitlines():
+        print(f"  {line}")
+    print()
+
+
+def _handle_task_command(agent: Agent, command: str) -> bool:
+    """Обрабатывает команды конечного автомата задачи. True, если команда взята."""
+    task = agent.task
+    if task is None:
+        print("Состояние задачи: выключено (см. секцию task в config.json).\n")
+        return True
+
+    parts = command.strip().split(maxsplit=1)
+    verb = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if verb in ("task", "задача", "статус"):
+        print_task_status(agent)
+        return True
+
+    if verb in ("task_new", "новая_задача", "задача_new"):
+        if not rest:
+            print("Укажите описание задачи: task_new <описание>\n")
+            return True
+        task.reset(description=rest)
+        agent.save_task()
+        print("Новая задача начата (этап planning).")
+        print_task_status(agent)
+        return True
+
+    if verb in ("task_next", "следующий_этап", "далее"):
+        if not task.has_task():
+            print("Нет активной задачи. Начните через /task_new <описание>.\n")
+            return True
+        try:
+            task.advance()
+            agent.save_task()
+            print("Задача переведена на следующий этап по автомату.")
+            print_task_status(agent)
+        except ValueError as exc:
+            print(f"{exc}\n")
+        return True
+
+    if verb in ("task_stage", "этап"):
+        if not rest:
+            print("Укажите этап: task_stage <planning|execution|validation|done>\n")
+            return True
+        try:
+            task.set_stage(rest)
+            agent.save_task()
+            print_task_status(agent)
+        except ValueError as exc:
+            print(f"{exc}\n")
+        return True
+
+    if verb in ("task_step", "шаг"):
+        if not rest:
+            print("Укажите номер шага: task_step <N>\n")
+            return True
+        try:
+            task.set_step(int(rest))
+            agent.save_task()
+            print_task_status(agent)
+        except ValueError:
+            print("Шаг должен быть целым числом.\n")
+        return True
+
+    if verb in ("task_expected", "ожидание"):
+        if not rest:
+            print("Укажите ожидаемое действие: task_expected <что нужно сейчас>\n")
+            return True
+        task.set_expected_action(rest)
+        agent.save_task()
+        print_task_status(agent)
+        return True
+
+    if verb in ("task_pause", "пауза", "приостановить"):
+        if task.pause():
+            agent.save_task()
+            print("Задача приостановлена (можно на любом этапе).")
+        else:
+            print("Задача уже приостановлена.\n")
+        print_task_status(agent)
+        return True
+
+    if verb in ("task_resume", "продолжить", "возобновить"):
+        if task.resume():
+            agent.save_task()
+            print("Задача возобновлена с того же места (без повторных объяснений).")
+        else:
+            print("Задача не приостановлена.\n")
+        print_task_status(agent)
+        return True
+
+    if verb in ("task_done", "готово", "завершить"):
+        try:
+            task.set_stage("done")
+            agent.save_task()
+            print("Задача переведена в состояние done.")
+            print_task_status(agent)
+        except ValueError as exc:
+            print(f"{exc}\n")
+        return True
+
+    if verb in ("task_clear", "сбросить"):
+        task.reset()
+        agent.save_task()
+        print("Состояние задачи сброшено.\n")
         return True
 
     return False
@@ -440,6 +574,18 @@ def print_help() -> None:
                          — задать предпочтение (группа: style | format | constraints)
   /preference_del <группа> <ключ> — убрать предпочтение
 
+Состояние задачи (конечный автомат):
+  /task                  — показать этап, шаг и ожидаемое действие
+  /task_new <описание>   — начать новую задачу (этап planning)
+  /task_next             — перевести задачу на следующий этап по автомату
+  /task_stage <этап>     — перейти на этап: planning | execution | validation | done
+  /task_step <N>         — установить номер текущего шага
+  /task_expected <действие> — задать ожидаемое действие
+  /task_pause            — приостановить задачу (можно на любом этапе)
+  /task_resume           — продолжить задачу с того же места
+  /task_done             — перевести задачу в состояние done
+  /task_clear            — сбросить состояние задачи
+
 Любая строка без слэша уходит модели как сообщение пользователя.
 """)
 
@@ -478,6 +624,13 @@ def _dispatch_command(agent: Agent, line: str) -> bool:
                 "preference", "предпочтение", "preference_del",
                 "убрать_предпочтение"):
         return _handle_profile_command(agent, cmd)
+    if verb in ("task", "задача", "статус", "task_new", "новая_задача",
+                "задача_new", "task_next", "следующий_этап", "далее",
+                "task_stage", "этап", "task_step", "шаг",
+                "task_expected", "ожидание", "task_pause", "пауза",
+                "приостановить", "task_resume", "продолжить", "возобновить",
+                "task_done", "готово", "завершить", "task_clear", "сбросить"):
+        return _handle_task_command(agent, cmd)
     print(f"Неизвестная команда: /{verb}. Введите /help для списка команд.\n")
     return True
 
@@ -517,6 +670,11 @@ def main() -> None:
         else:
             print("Персонализация: включена, активного профиля нет.")
         print("  команды: /profile, /profile_new, /profile_use, /preference")
+    if agent.task is not None:
+        print("Состояние задачи: включено (конечный автомат: этап/шаг/ожидание).")
+        print("  команды: /task, /task_new, /task_next, /task_pause, /task_resume")
+        if agent.task.has_task():
+            print_task_status(agent)
     print("Введите /help для списка команд.\n")
 
     while True:
