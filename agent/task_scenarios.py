@@ -273,8 +273,8 @@ def run_interactive(config: dict, offline: bool) -> None:
                 task.set_step(int(rest))
                 agent.save_task()
                 print(task.summarize() + "\n")
-            except ValueError:
-                print("Шаг должен быть целым числом.\n")
+            except ValueError as exc:
+                print(f"{exc}\n")
             continue
         if verb in ("task_expected", "ожидание"):
             task.set_expected_action(rest)

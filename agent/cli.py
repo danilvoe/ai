@@ -318,8 +318,8 @@ def _handle_task_command(agent: Agent, command: str) -> bool:
             task.set_step(int(rest))
             agent.save_task()
             print_task_status(agent)
-        except ValueError:
-            print("Шаг должен быть целым числом.\n")
+        except ValueError as exc:
+            print(f"{exc}\n")
         return True
 
     if verb in ("task_expected", "ожидание"):

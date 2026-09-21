@@ -151,8 +151,19 @@ class TaskState:
         return self.stage
 
     def set_step(self, step: int) -> int:
-        """Устанавливает номер текущего шага."""
-        self.step = max(0, int(step))
+        """Устанавливает номер текущего шага (только вперёд, не меньше текущего).
+
+        Шаги — линейный прогресс задачи, поэтому откат назад запрещён:
+        значение меньше текущего шага отклоняется. Исключение — сброс задачи
+        через :meth:`TaskStateMachine.reset`, который начинает с шага 0.
+        """
+        step = max(0, int(step))
+        if step < self.step:
+            raise ValueError(
+                f"Нельзя откатить шаг назад: текущий {self.step}, "
+                f"запрошен {step}. Шаги идут только вперёд."
+            )
+        self.step = step
         return self.step
 
     def set_expected_action(self, action: str) -> str:
