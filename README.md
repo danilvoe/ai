@@ -19,6 +19,12 @@ breaks the state machine. **Resume continues from the same place** — the task
 description, stage and expected action stay in the state and are re-injected as
 a system message, so the agent needs no repeated explanations.
 
+**You cannot skip real work.** Every stage must be explicitly marked complete
+(`complete()`) before a forward transition; `advance()`/`set_stage()` reject a
+move forward while the current stage is not done. A corrective rollback
+(`validation → execution` when validation fails) stays allowed without
+completion. Steps move only forward too.
+
 ## What was added
 
 - `agent/task_state.py` — `TaskState` (stage/step/expected_action/description/
@@ -31,8 +37,8 @@ a system message, so the agent needs no repeated explanations.
   state survives a restart.
 - `agent/cli.py` — reads the `task` section and adds commands: `/task`,
   `/task_new <описание>`, `/task_next`, `/task_stage <этап>`, `/task_step <N>`,
-  `/task_expected <действие>`, `/task_pause`, `/task_resume`, `/task_done`,
-  `/task_clear`.
+  `/task_expected <действие>`, `/task_complete`, `/task_pause`, `/task_resume`,
+  `/task_done`, `/task_clear`.
 - `agent/task_scenarios.py` — live or demo (`--demo`) scenario that walks a task
   through its full lifecycle, shows an illegal transition being rejected, a
   pause and a resume without repeated explanations.
@@ -49,7 +55,8 @@ cd ai_advent && python3 -m agent.task_scenarios --online # real API requests
 
 Commands (not sent to the model): `task`, `task_new <описание>`,
 `task_next`, `task_stage <этап>`, `task_step <N>`, `task_expected <действие>`,
-`task_pause`, `task_resume`, `task_done`, `task_clear`, `context`, `exit`.
+`task_complete`, `task_pause`, `task_resume`, `task_done`, `task_clear`,
+`context`, `exit`.
 
 # Day 12: Personalization of the assistant — user profile over the memory model
 

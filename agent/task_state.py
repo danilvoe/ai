@@ -54,6 +54,23 @@ STAGE_LABELS = {
 # Этап по умолчанию для новой задачи.
 DEFAULT_STAGE = "planning"
 
+# Порядок этапов жизненного цикла — для определения, куда ведёт переход.
+# Переход "вперёд" (к более позднему этапу) требует, чтобы текущий этап был
+# выполнен. "Назад" (корректирующий возврат, напр. validation -> execution при
+# провале проверки) разрешён без отметки выполненным.
+_STAGE_ORDER = {
+    "planning": 0,
+    "planning_review": 1,
+    "execution": 2,
+    "validation": 3,
+    "done": 4,
+}
+
+
+def _is_forward(from_stage: str, to_stage: str) -> bool:
+    """Является ли переход ``from -> to`` движением вперёд по жизненному циклу."""
+    return _STAGE_ORDER[to_stage] > _STAGE_ORDER[from_stage]
+
 
 def _validate_stage(stage: str) -> str:
     stage = str(stage).strip().lower()
@@ -79,6 +96,7 @@ class TaskState:
     expected_action: str = ""
     description: str = ""
     paused: bool = False
+    completed: bool = False
     log: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -104,6 +122,7 @@ class TaskState:
             expected_action=str(data.get("expected_action", "")),
             description=str(data.get("description", "")),
             paused=bool(data.get("paused", False)),
+            completed=bool(data.get("completed", False)),
             log=[str(item) for item in (data.get("log") or [])],
         )
 
@@ -115,14 +134,37 @@ class TaskState:
             "expected_action": self.expected_action,
             "description": self.description,
             "paused": self.paused,
+            "completed": self.completed,
             "log": list(self.log),
         }
 
     def _record(self, event: str) -> None:
         self.log.append(event)
 
+    def complete(self) -> bool:
+        """Отмечает текущий этап как выполненный (завершён).
+
+        Только после этого допустим переход на следующий этап. Возвращает
+        False, если этап уже отмечен выполненным.
+        """
+        if self.completed:
+            return False
+        self.completed = True
+        self._record(f"stage {self.stage} completed")
+        return True
+
     def advance(self) -> str:
-        """Переводит задачу на следующий этап (по автомату)."""
+        """Переводит задачу на следующий этап (по автомату).
+
+        Разрешено только если текущий этап отмечен выполненным (см.
+        :meth:`complete`). Переход сбрасывает флаг ``completed``: новый этап
+        снова нужно отработать и подтвердить.
+        """
+        if not self.completed:
+            raise ValueError(
+                f"Этап {self.stage!r} ещё не выполнен. Отметьте его через "
+                f"complete(), прежде чем переходить дальше."
+            )
         next_stages = TRANSITIONS[self.stage]
         if not next_stages:
             raise ValueError(
@@ -130,6 +172,7 @@ class TaskState:
             )
         previous = self.stage
         self.stage = next_stages[0]
+        self.completed = False
         self._record(f"{previous} -> {self.stage}")
         return self.stage
 
@@ -139,6 +182,13 @@ class TaskState:
         Возвращает новый этап. Бросает ValueError при недопустимом переходе.
         """
         target = _validate_stage(stage)
+        # Вперёд можно только после выполнения текущего этапа; корректирующий
+        # возврат (напр. validation -> execution при провале проверки) — без него.
+        if target != self.stage and _is_forward(self.stage, target) and not self.completed:
+            raise ValueError(
+                f"Этап {self.stage!r} ещё не выполнен. Отметьте его через "
+                f"complete(), прежде чем переходить дальше."
+            )
         if target not in TRANSITIONS[self.stage] and target != self.stage:
             raise ValueError(
                 f"Недопустимый переход: {self.stage!r} -> {target!r}. "
@@ -147,6 +197,7 @@ class TaskState:
         if target != self.stage:
             previous = self.stage
             self.stage = target
+            self.completed = False
             self._record(f"{previous} -> {self.stage}")
         return self.stage
 
@@ -218,6 +269,8 @@ class TaskState:
             parts.append(f"- Ожидаемое действие: {self.expected_action}")
         if self.paused:
             parts.append("- Статус: задача приостановлена (resume — продолжить)")
+        elif self.completed:
+            parts.append("- Статус: этап выполнен (переход на следующий этап разрешён)")
         return "\n".join(parts)
 
     def summarize(self) -> str:
@@ -230,7 +283,12 @@ class TaskState:
             lines.append(f"Ожидаемое действие: {self.expected_action}")
         if self.description:
             lines.append(f"Описание: {self.description}")
-        lines.append("Статус: приостановлена" if self.paused else "Статус: активна")
+        if self.paused:
+            lines.append("Статус: приостановлена")
+        elif self.completed:
+            lines.append("Статус: этап выполнен — можно /task_next")
+        else:
+            lines.append("Статус: активна (выполните ожидаемое действие, затем /task_complete)")
         return "\n".join(lines)
 
     def __repr__(self) -> str:
@@ -298,6 +356,11 @@ class TaskStateMachine:
         """Завершена ли задача."""
         return self._state.is_done()
 
+    @property
+    def is_completed(self) -> bool:
+        """Выполнен ли текущий этап (можно ли переходить дальше)."""
+        return self._state.completed
+
     def has_task(self) -> bool:
         """Есть ли у автомата осмысленная задача (есть описание или этап)."""
         return bool(self._state.description) or bool(self._state.expected_action) \
@@ -306,6 +369,10 @@ class TaskStateMachine:
     def advance(self) -> str:
         """Переводит задачу на следующий этап по автомату."""
         return self._state.advance()
+
+    def complete(self) -> bool:
+        """Отмечает текущий этап выполненным (разрешает переход дальше)."""
+        return self._state.complete()
 
     def set_stage(self, stage: str) -> str:
         """Явно переводит задачу на указанный этап (с проверкой перехода)."""

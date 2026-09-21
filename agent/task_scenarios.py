@@ -132,7 +132,16 @@ def run_scenario(config: dict, offline: bool) -> None:
     print(f"  ответ: {reply.content}")
     print()
 
-    print("--- 2. Переход в выполнение (execution) ---")
+    print("--- 2. Попытка перейти на выполнение без завершения планирования ---")
+    try:
+        task.advance()
+    except ValueError as exc:
+        print(f"  отклонено автоматом: {exc}")
+    print()
+
+    print("--- 3. Планирование выполнено -> переход в выполнение (execution) ---")
+    task.complete()
+    agent.save_task()
     task.advance()
     agent.save_task()
     task.set_step(1)
@@ -142,14 +151,16 @@ def run_scenario(config: dict, offline: bool) -> None:
     print(task.summarize())
     print()
 
-    print("--- 3. Попытка недопустимого перехода (execution -> planning) ---")
+    print("--- 4. Попытка недопустимого перехода (execution -> planning) ---")
     try:
         task.set_stage("planning")
     except ValueError as exc:
         print(f"  отклонено автоматом: {exc}")
     print()
 
-    print("--- 4. Переход в проверку (validation) ---")
+    print("--- 5. Выполнение завершено -> переход в проверку (validation) ---")
+    task.complete()
+    agent.save_task()
     task.advance()
     agent.save_task()
     task.set_expected_action("проверить цифры и соответствие данным")
@@ -157,7 +168,7 @@ def run_scenario(config: dict, offline: bool) -> None:
     print(task.summarize())
     print()
 
-    print("--- 5. Пауза на этапе проверки (на любом этапе) ---")
+    print("--- 6. Пауза на этапе проверки (на любом этапе) ---")
     task.pause()
     agent.save_task()
     print(task.summarize())
@@ -166,7 +177,7 @@ def run_scenario(config: dict, offline: bool) -> None:
     print(f"  ответ: {reply.content}")
     print()
 
-    print("--- 6. Возобновление с того же места ---")
+    print("--- 7. Возобновление с того же места ---")
     task.resume()
     agent.save_task()
     print(task.summarize())
@@ -174,7 +185,7 @@ def run_scenario(config: dict, offline: bool) -> None:
     print("  " + task.system_message().replace("\n", "\n  "))
     print()
 
-    print("--- 7. Проверка провалена -> возврат на выполнение ---")
+    print("--- 8. Проверка провалена -> возврат на выполнение ---")
     try:
         task.set_stage("execution")
         agent.save_task()
@@ -185,11 +196,22 @@ def run_scenario(config: dict, offline: bool) -> None:
     print(task.summarize())
     print()
 
-    print("--- 8. Повторная проверка -> done ---")
+    print("--- 9. Переход из execution в done напрямую запрещён ---")
+    try:
+        task.set_stage("done")
+    except ValueError as exc:
+        print(f"  отклонено автоматом: {exc}")
+    print()
+
+    print("--- 10. Повторная проверка -> done ---")
+    task.complete()
+    agent.save_task()
     task.set_stage("validation")
     agent.save_task()
     print(task.summarize())
     print()
+    task.complete()
+    agent.save_task()
     task.set_stage("done")
     agent.save_task()
     print(task.summarize())
@@ -209,9 +231,10 @@ def run_interactive(config: dict, offline: bool) -> None:
     agent = new_agent(config, offline, task)
 
     print("Состояние задачи (конечный автомат) включено.")
-    print("Начните: /task_new <описание>, далее /task_next, /task_pause, /task_resume")
-    print("Команды со слэшем: /help /task /task_new /task_next /task_stage "
-          "/task_step /task_expected /task_pause /task_resume /task_done /task_clear /context")
+    print("Начните: /task_new <описание>, далее /task_complete, /task_next")
+    print("Команды со слэшем: /help /task /task_new /task_complete /task_next "
+          "/task_stage /task_step /task_expected /task_pause /task_resume "
+          "/task_done /task_clear /context")
     while True:
         try:
             line = input("\nВы: ").strip()
@@ -236,8 +259,8 @@ def run_interactive(config: dict, offline: bool) -> None:
         rest = cmd.split(maxsplit=1)[1] if len(cmd.split()) > 1 else ""
         if verb in ("help", "?"):
             print(
-                "/task  /task_new <описание>  /task_next  /task_stage <этап>\n"
-                "/task_step <N>  /task_expected <действие>\n"
+                "/task  /task_new <описание>  /task_complete  /task_next\n"
+                "/task_stage <этап>  /task_step <N>  /task_expected <действие>\n"
                 "/task_pause  /task_resume  /task_done  /task_clear  /context  /exit\n"
             )
             continue
@@ -250,6 +273,14 @@ def run_interactive(config: dict, offline: bool) -> None:
                 continue
             task.reset(description=rest)
             agent.save_task()
+            print(task.summarize() + "\n")
+            continue
+        if verb in ("task_complete", "выполнено", "готово_этап"):
+            if task.complete():
+                agent.save_task()
+                print("Этап выполнен — можно /task_next.\n")
+            else:
+                print("Этап уже выполнен.\n")
             print(task.summarize() + "\n")
             continue
         if verb in ("task_next", "следующий_этап", "далее"):

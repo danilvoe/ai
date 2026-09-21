@@ -285,6 +285,18 @@ def _handle_task_command(agent: Agent, command: str) -> bool:
         print_task_status(agent)
         return True
 
+    if verb in ("task_complete", "выполнено", "готово_этап"):
+        if not task.has_task():
+            print("Нет активной задачи. Начните через /task_new <описание>.\n")
+            return True
+        if task.complete():
+            agent.save_task()
+            print("Этап отмечен выполненным — теперь можно /task_next.")
+        else:
+            print("Этап уже отмечен выполненным.\n")
+        print_task_status(agent)
+        return True
+
     if verb in ("task_next", "следующий_этап", "далее"):
         if not task.has_task():
             print("Нет активной задачи. Начните через /task_new <описание>.\n")
@@ -577,10 +589,11 @@ def print_help() -> None:
 Состояние задачи (конечный автомат):
   /task                  — показать этап, шаг и ожидаемое действие
   /task_new <описание>   — начать новую задачу (этап planning)
+  /task_expected <действие> — задать ожидаемое действие
+  /task_complete         — отметить этап выполненным (разрешает /task_next)
   /task_next             — перевести задачу на следующий этап по автомату
   /task_stage <этап>     — перейти на этап: planning | execution | validation | done
-  /task_step <N>         — установить номер текущего шага
-  /task_expected <действие> — задать ожидаемое действие
+  /task_step <N>         — установить номер текущего шага (только вперёд)
   /task_pause            — приостановить задачу (можно на любом этапе)
   /task_resume           — продолжить задачу с того же места
   /task_done             — перевести задачу в состояние done
@@ -627,7 +640,8 @@ def _dispatch_command(agent: Agent, line: str) -> bool:
     if verb in ("task", "задача", "статус", "task_new", "новая_задача",
                 "задача_new", "task_next", "следующий_этап", "далее",
                 "task_stage", "этап", "task_step", "шаг",
-                "task_expected", "ожидание", "task_pause", "пауза",
+                "task_expected", "ожидание", "task_complete", "выполнено",
+                "готово_этап", "task_pause", "пауза",
                 "приостановить", "task_resume", "продолжить", "возобновить",
                 "task_done", "готово", "завершить", "task_clear", "сбросить"):
         return _handle_task_command(agent, cmd)
