@@ -9,6 +9,7 @@ from .compression import (
 from .context import ContextStrategy
 from .conversation import Conversation, SessionStore
 from .llm_client import Completion, LLMClient
+from .memory import MemoryLayers
 from .tokens import (
     ContextOverflowError,
     UsageReport,
@@ -28,6 +29,11 @@ class Agent:
     контекстом без summary (Sliding Window / Sticky Facts / Branching),
     см. agent/context.py. Если стратегия задана, она определяет, какие сообщения
     уходят в модель, и имеет приоритет над сжатием.
+
+    Если задана ``memory`` (см. agent/memory.py), агент использует явную модель
+    памяти из трёх слоёв: краткосрочная (текущий диалог), рабочая (данные
+    текущей задачи) и долговременная (профиль, решения, знания). Слои хранятся
+    отдельно, а их содержимое добавляется к запросу в виде system-сообщений.
     """
 
     def __init__(
@@ -37,12 +43,14 @@ class Agent:
         max_context_tokens: int | None = None,
         compression: CompressionConfig | None = None,
         context_strategy: ContextStrategy | None = None,
+        memory: MemoryLayers | None = None,
     ) -> None:
         self._client = client
         self._conversation = conversation
         self._max_context_tokens = max_context_tokens
         self._compression = compression or CompressionConfig(keep_recent=0)
         self._context_strategy = context_strategy
+        self._memory = memory
         self._last_prompt_tokens: int | None = None
         self._usage = UsageReport(
             input_price=client.config.get("input_cost_per_million"),
@@ -74,15 +82,26 @@ class Agent:
         return self._compression
 
     @property
+    def memory(self) -> MemoryLayers | None:
+        """Явная модель памяти агента (None — память не используется)."""
+        return self._memory
+
+    @property
     def context_messages(self) -> list[dict]:
         """Сообщения, которые будут отправлены в модель.
 
         Определяется активной стратегией управления контекстом, а если её нет —
         сжатием истории (summary + свежее окно), см. agent/compression.py.
+        Если задана модель памяти, к полученным сообщениям добавляется блок
+        system-сообщений из всех слоёв памяти (см. agent/memory.py).
         """
         if self._context_strategy is not None:
-            return self._context_strategy.build_messages(self._conversation)
-        return build_context_messages(self._conversation)
+            messages = self._context_strategy.build_messages(self._conversation)
+        else:
+            messages = build_context_messages(self._conversation)
+        if self._memory is not None:
+            return self._memory.build_memory_context() + messages
+        return messages
 
     @property
     def context_tokens(self) -> int:
@@ -93,11 +112,16 @@ class Agent:
         """
         if self._last_prompt_tokens is not None:
             return self._last_prompt_tokens
+        tokens = 0
         if self._context_strategy is not None:
-            return self._context_strategy.context_tokens(self._conversation)
-        if self._compression.enabled:
-            return compressed_context_tokens(self._conversation)
-        return estimate_messages_tokens(self._conversation.messages)
+            tokens += self._context_strategy.context_tokens(self._conversation)
+        elif self._compression.enabled:
+            tokens += compressed_context_tokens(self._conversation)
+        else:
+            tokens += estimate_messages_tokens(self._conversation.messages)
+        if self._memory is not None:
+            tokens += estimate_messages_tokens(self._memory.build_memory_context())
+        return tokens
 
     def ask(self, user_request: str) -> Completion:
         # Контекст, который реально уйдёт в модель, зависит от сжатия.

@@ -1,3 +1,53 @@
+# Day 11: Agent memory model — three separate memory layers
+
+`memory_scenarios.py` demonstrates an agent with an explicit memory model that
+splits information into three layers, each stored separately and filled
+explicitly (you choose what goes where):
+
+- **Short-term** — the current dialog (messages exchanged in this session).
+- **Working** — the current task's data (values the user entered, intermediate
+  results, constraints of this task). Lives within the session and is cleared on
+  a task switch (`clearworking`).
+- **Long-term** — profile, decisions, and knowledge that the agent writes to a
+  separate `profile.json` and remembers even in a brand-new session.
+
+The layers are physically separate: the dialog lives in the session JSON, the
+working memory in that session's `working` block, and the long-term memory in a
+dedicated profile file. `build_memory_context()` assembles the layers into
+system messages that are prepended to the request, so the agent actually sees
+them.
+
+## What was added
+
+- `agent/memory.py` — `MemoryLayers` (the model), `WorkingMemory`,
+  `LongTermMemory`, `LongTermKind` (profile/decision/knowledge). Explicit API:
+  `remember_short_term`, `remember_working`, `remember_long_term`,
+  `build_memory_context`, `summarize`.
+- `agent/conversation.py` — a session now stores a `working` block
+  (key-value) for the current task: `set_working`, `update_working`,
+  `clear_working`, and the `working` property. Old formats still load.
+- `agent/agent.py` — accepts `memory`; the memory layers' system messages are
+  prepended to the request context and counted in `context_tokens`.
+- `agent/cli.py` — reads the `memory` section and adds commands: `memory`
+  (show all layers), `remember <short|working|profile|decision|knowledge>
+  <ключ> = <значение>`, `forget <категория> <ключ>`, `clearworking`.
+- `agent/memory_scenarios.py` — live or demo (`--demo`) scenario that shows what
+  lands in each layer, how it affects the request, and how the agent answers
+  after a task switch wipes working memory but keeps long-term memory.
+
+Config keys (in the `memory` section): `enabled`, `profile_path`.
+
+## Run
+
+```bash
+cd ai_advent && python3 -m agent.memory_scenarios --demo   # fixed scenario, offline
+cd ai_advent && python3 -m agent.memory_scenarios          # live input, offline
+cd ai_advent && python3 -m agent.memory_scenarios --online # real API requests
+```
+
+Commands (not sent to the model): `memory`, `remember <слой> <ключ> = <значение>`,
+`forget <категория> <ключ>`, `clearworking`, `memory_reset`, `context`, `exit`.
+
 # Day 10: Context management — strategies without summary
 
 `context_scenarios.py` runs the same dialog under three different context-management

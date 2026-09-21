@@ -45,6 +45,7 @@ class Conversation:
             "summarized": 42,        # сколько первых сообщений свернуто в summary
             "messages": [...],       # активная ветка диалога (для просмотра)
             "facts": {...},          # липкие факты (ключ-значение)
+            "working": {...},        # рабочая память: данные текущей задачи
             "checkpoint": [...],     # общая часть диалога до точки ветвления
             "branches": {...},       # независимые ветки (id -> {name, messages})
             "active_branch": "id",   # какая ветка сейчас активна
@@ -61,6 +62,7 @@ class Conversation:
         self._summary = ""
         self._summarized = 0
         self._facts: dict[str, str] = {}
+        self._working: dict[str, str] = {}
         self._checkpoint: list[dict] = []
         self._branches: dict[str, dict] = {}
         self._active_branch: str | None = None
@@ -98,6 +100,11 @@ class Conversation:
         return dict(self._facts)
 
     @property
+    def working(self) -> dict[str, str]:
+        """Рабочая память: данные текущей задачи (ключ-значение)."""
+        return dict(self._working)
+
+    @property
     def active_branch(self) -> str | None:
         """Имя активной ветки диалога (None, если ветвление не начато)."""
         return self._active_branch
@@ -119,6 +126,7 @@ class Conversation:
         self._summary = ""
         self._summarized = 0
         self._facts = {}
+        self._working = {}
         self._checkpoint = []
         self._branches = {}
         self._active_branch = None
@@ -139,6 +147,7 @@ class Conversation:
             self._summary = data.get("summary", "") or ""
             self._summarized = data.get("summarized", 0) or 0
             self._facts = data.get("facts", {}) or {}
+            self._working = data.get("working", {}) or {}
             self._branches = data.get("branches", {}) or {}
             self._active_branch = data.get("active_branch")
             checkpoint = data.get("checkpoint")
@@ -163,6 +172,7 @@ class Conversation:
                     "summarized": self._summarized,
                     "messages": self.messages,
                     "facts": self._facts,
+                    "working": self._working,
                     "checkpoint": self._checkpoint,
                     "branches": self._branches,
                     "active_branch": self._active_branch,
@@ -240,6 +250,23 @@ class Conversation:
         """Добавляет/обновляет несколько липких фактов и сохраняет."""
         if facts:
             self._facts.update(facts)
+            self.save()
+
+    def set_working(self, key: str, value: str) -> None:
+        """Записывает одну запись в рабочую память (данные текущей задачи)."""
+        self._working[key] = value
+        self.save()
+
+    def update_working(self, items: dict[str, str]) -> None:
+        """Добавляет/обновляет несколько записей рабочей памяти."""
+        if items:
+            self._working.update(items)
+            self.save()
+
+    def clear_working(self) -> None:
+        """Очищает рабочую память (например, при смене текущей задачи)."""
+        if self._working:
+            self._working = {}
             self.save()
 
     def checkpoint(self) -> int:

@@ -10,6 +10,7 @@ from .config import load_config
 from .context import strategy_from_config
 from .conversation import SessionStore
 from .llm_client import LLMClient
+from .memory import LONG_TERM_KINDS, MemoryLayers
 from .tokens import ContextOverflowError
 
 
@@ -32,6 +33,20 @@ def build_agent(conversation) -> Agent:
         max_context_tokens=config.get("max_context_tokens"),
         compression=_compression_from_config(config),
         context_strategy=strategy_from_config(config),
+        memory=_memory_from_config(conversation),
+    )
+
+
+def _memory_from_config(conversation) -> MemoryLayers | None:
+    """Создаёт модель памяти из секции ``memory`` конфигурации (None — выключена)."""
+    config = load_config()
+    section = config.get("memory", {}) or {}
+    if not section.get("enabled", False):
+        return None
+    profile_path = section.get("profile_path")
+    return MemoryLayers(
+        conversation,
+        long_term_path=profile_path or None,
     )
 
 
@@ -114,6 +129,99 @@ def pick_session(store: SessionStore) -> Agent:
     return build_agent(conversation)
 
 
+def print_memory_status(agent: Agent) -> None:
+    """Печатает сводку по всем слоям памяти агента."""
+    memory = agent.memory
+    if memory is None:
+        print("Модель памяти: выключена (см. секцию memory в config.json).\n")
+        return
+    print(f"Модель памяти: включена ({memory.long_term.path.name}).")
+    print(memory.summarize())
+    print()
+
+
+def _parse_memory_command(command: str) -> tuple[str, str, str] | None:
+    """Разбирает команду ``remember <layer> <key> = <value>``.
+
+    Слой: short | working | profile | decision | knowledge. Возвращает кортеж
+    (layer, key, value) или None, если команда не распознана.
+    """
+    rest = command.strip()
+    if not rest:
+        return None
+    parts = rest.split("=", maxsplit=1)
+    if len(parts) != 2:
+        return None
+    lhs = parts[0].strip()
+    rhs = parts[1].strip()
+    if not lhs or not rhs:
+        return None
+    layer, _, key = lhs.partition(" ")
+    key = key.strip()
+    if not key:
+        return None
+    return layer.strip().lower(), key, rhs
+
+
+def _handle_memory_command(agent: Agent, command: str) -> bool:
+    """Обрабатывает команды модели памяти. Возвращает True, если команда взята."""
+    memory = agent.memory
+    if memory is None:
+        return False
+
+    parts = command.strip().split(maxsplit=2)
+    verb = parts[0].lower()
+    rest = command.strip()[len(parts[0]):].strip()
+
+    if verb in ("memory", "память", "память?"):
+        print_memory_status(agent)
+        return True
+
+    if verb in ("remember", "запомни"):
+        parsed = _parse_memory_command(rest)
+        if parsed is None:
+            print("Использование: remember <short|working|profile|decision|knowledge> <ключ> = <значение>\n")
+            return True
+        layer, key, value = parsed
+        if layer in ("working", "рабочая"):
+            memory.remember_working(key, value)
+            print(f"Записано в рабочую память: {key} = {value}\n")
+        elif layer in ("short", "short_term", "краткосрочная"):
+            memory.remember_short_term("user", f"{key} = {value}")
+            print(f"Добавлено в диалог (краткосрочная память): {key} = {value}\n")
+        elif layer in LONG_TERM_KINDS:
+            memory.remember_long_term(layer, key, value)
+            print(f"Записано в долговременную память ({layer}): {key} = {value}\n")
+        else:
+            print(
+                f"Неизвестный слой памяти: {layer!r}. "
+                f"Допустимо: short, working, {', '.join(LONG_TERM_KINDS)}.\n"
+            )
+        return True
+
+    if verb in ("forget", "забыть", "удалить"):
+        if len(parts) < 3:
+            print("Использование: forget <profile|decision|knowledge> <ключ>\n")
+            return True
+        kind = parts[1].lower()
+        key = parts[2]
+        if kind not in LONG_TERM_KINDS:
+            print(f"Неизвестная категория: {kind!r}.\n")
+            return True
+        if memory.long_term.forget(kind, key):
+            print(f"Удалено из долговременной памяти ({kind}): {key}\n")
+        else:
+            print(f"Запись {key!r} ({kind}) не найдена.\n")
+        return True
+
+    if verb in ("clearworking", "clear_working", "новая_задача", "сменить_задачу"):
+        memory.working.clear()
+        print("Рабочая память очищена (текущая задача завершена).\n")
+        return True
+
+    return False
+
+
 def print_context_status(agent: Agent) -> None:
     """Печатает активную стратегию управления контекстом и состояние веток."""
     strategy = agent.context_strategy
@@ -178,6 +286,66 @@ def _handle_branch_command(agent: Agent, command: str) -> None:
         return
 
 
+def print_help() -> None:
+    """Печатает список доступных команд агента."""
+    print("""Доступные команды (вводятся со слэшем):
+
+Общие:
+  /exit /quit            — завершить
+  /help                  — показать этот список
+  /clear                 — стереть историю диалога
+  /history               — показать полную историю диалога
+
+Контекст и ветвление:
+  /context               — показать стратегию контекста, факты, ветки
+  /checkpoint            — сохранить точку ветвления
+  /branch <имя>          — создать и активировать ветку
+  /switch <имя>          — переключить активную ветку
+
+Память (3 слоя):
+  /memory                — показать содержимое всех слоёв памяти
+  /remember <слой> <ключ> = <значение>
+                         — записать в слой: short | working | profile | decision | knowledge
+  /forget <категория> <ключ>
+                         — удалить запись долговременной памяти (profile/decision/knowledge)
+  /clearworking          — очистить рабочую память (смена задачи)
+
+Любая строка без слэша уходит модели как сообщение пользователя.
+""")
+
+
+def _dispatch_command(agent: Agent, line: str) -> bool:
+    """Обрабатывает строку-команду (начинается со ``/``). Возвращает True, если это команда."""
+    cmd = line[1:].strip()
+    if not cmd:
+        return True
+    verb = cmd.split(maxsplit=1)[0].lower()
+    if verb in ("exit", "quit"):
+        print("До свидания!")
+        raise SystemExit(0)
+    if verb in ("help", "?", "помощь"):
+        print_help()
+        return True
+    if verb in ("clear", "очистить"):
+        agent.conversation.clear()
+        print("История диалога очищена.\n")
+        return True
+    if verb in ("history", "история", "показать историю"):
+        print_history(agent)
+        return True
+    if verb in ("context", "контекст", "факты", "факт"):
+        print_context_status(agent)
+        return True
+    if verb in ("checkpoint", "чекпоинт", "ветв", "branch", "switch", "переключ"):
+        _handle_branch_command(agent, cmd)
+        return True
+    if verb in ("memory", "память", "remember", "запомни", "forget", "забыть",
+                "clearworking", "clear_working", "новая_задача", "сменить_задачу"):
+        return _handle_memory_command(agent, cmd)
+    print(f"Неизвестная команда: /{verb}. Введите /help для списка команд.\n")
+    return True
+
+
 def main() -> None:
     store = SessionStore()
     try:
@@ -202,7 +370,11 @@ def main() -> None:
             )
         else:
             print("Сжатие истории: включено.")
-    print()
+    if agent.memory is not None:
+        print("Модель памяти: включена (краткосрочная / рабочая / долговременная).")
+        print("  команды: /memory, /remember <слой> <ключ> = <значение>, "
+              "/forget <категория> <ключ>, /clearworking")
+    print("Введите /help для списка команд.\n")
 
     while True:
         try:
@@ -213,21 +385,11 @@ def main() -> None:
 
         if not user_request:
             continue
-        if user_request.lower() in ("exit", "quit"):
-            print("До свидания!")
-            break
-        if user_request.lower() in ("clear", "очистить"):
-            agent.conversation.clear()
-            print("История диалога очищена.\n")
-            continue
-        if user_request.lower() in ("history", "история", "показать историю"):
-            print_history(agent)
-            continue
-        if user_request.lower() in ("context", "контекст", "факты", "факт"):
-            print_context_status(agent)
-            continue
-        if user_request.lower().startswith(("checkpoint", "чекпоинт", "ветв")):
-            _handle_branch_command(agent, user_request)
+        if user_request.startswith("/"):
+            try:
+                _dispatch_command(agent, user_request)
+            except SystemExit:
+                break
             continue
 
         try:
