@@ -66,6 +66,7 @@ def _task_from_config(conversation) -> TaskStateMachine | None:
     return TaskStateMachine.from_dict(
         conversation.task,
         auto_advance=section.get("auto_advance", False),
+        strict=section.get("strict", True),
     )
 
 
@@ -398,6 +399,13 @@ def _handle_task_command(agent: Agent, command: str) -> bool:
               f"(задача сама переходит дальше, когда этап выполнен).\n")
         return True
 
+    if verb in ("task_strict", "контроль_этапов"):
+        task.strict = not task.strict
+        agent.save_task()
+        state = "включён" if task.strict else "выключен"
+        print(f"Контроль переходов (запрет перепрыгивания этапа): {state}.\n")
+        return True
+
     if verb in ("task_clear", "сбросить"):
         task.reset()
         agent.save_task()
@@ -702,6 +710,7 @@ def print_help() -> None:
   /task_expected <действие> — задать ожидаемое действие
   /task_complete         — отметить этап выполненным (разрешает /task_next)
   /task_auto             — вкл/выкл автопродвижение (задача сама идёт дальше)
+  /task_strict           — вкл/выкл контроль переходов (запрет перепрыгивания этапа)
   /task_next             — перевести задачу на следующий этап по автомату
   /task_stage <этап>     — перейти на этап: planning | execution | validation | done
   /task_step <N>         — установить номер текущего шага (только вперёд)
@@ -762,6 +771,7 @@ def _dispatch_command(agent: Agent, line: str) -> bool:
                 "task_stage", "этап", "task_step", "шаг",
                 "task_expected", "ожидание", "task_complete", "выполнено",
                 "готово_этап", "task_auto", "автопродвижение",
+                "task_strict", "контроль_этапов",
                 "task_pause", "пауза",
                 "приостановить", "task_resume", "продолжить", "возобновить",
                 "task_done", "готово", "завершить", "task_clear", "сбросить"):
@@ -851,6 +861,8 @@ def main() -> None:
         print(f"\nАгент: {reply.content}\n")
         if agent.invariants is not None and agent.last_guard_violation:
             print("(ассистент отказался: предложенное решение нарушало инвариант)\n")
+        if agent.task is not None and agent.last_transition_violation:
+            print("(ассистент отказался: попытка перепрыгнуть этап задачи)\n")
         print_usage(agent)
         if agent.task is not None:
             print_task_status(agent)

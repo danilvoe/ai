@@ -86,6 +86,114 @@ STAGE_COMPLETION_CRITERIA = {
     "done": "этап закрыт — задача завершена",
 }
 
+# Контролируемые переходы: что разрешено и что запрещено на каждом этапе.
+# ``allowed`` — объём работ текущего этапа; ``forbidden`` — то, что относится
+# к более поздним этапам и запрещено сейчас. Это делает переходы управляемыми:
+# нельзя перепрыгнуть этап, нельзя делать реализацию до утверждённого плана,
+# нельзя сдавать финал без проверки.
+STAGE_SCOPE = {
+    "planning": {
+        "allowed": "уточнить цель, собрать требования, составить и согласовать план",
+        "forbidden": (
+            "выполнять задачу, создавать итоговый результат или сдавать финал — "
+            "это требует согласованного плана"
+        ),
+    },
+    "planning_review": {
+        "allowed": "согласовать план с пользователем и получить одобрение",
+        "forbidden": "выполнять задачу или создавать результат до согласования плана",
+    },
+    "execution": {
+        "allowed": "выполнить задачу и создать результат на основе согласованного плана",
+        "forbidden": "сдавать или одобрять финал без проверки результата",
+    },
+    "validation": {
+        "allowed": "проверить результат на соответствие требованиям, исправить расхождения",
+        "forbidden": "создавать новый результат, не вернувшись на выполнение",
+    },
+    "done": {
+        "allowed": "задача завершена, изменений больше нет",
+        "forbidden": "изменять результат после завершения",
+    },
+}
+
+# Ключевые слова, указывающие на более поздний этап. Используются для
+# детерминированной проверки (без вызова LLM): не пытается ли пользователь
+# перепрыгнуть текущий этап. Пустой кортеж — переходов вперёд нет.
+STAGE_JUMP_KEYWORDS = {
+    "planning": (
+        "реализуй", "реализовать", "напиши код", "написать код", "сделай код",
+        "выполни задачу", "выполнить задачу", "сделай отчёт", "сделать отчёт",
+        "сдай", "сдавай", "финальный", "финальную", "итоговый", "итоговую",
+        "готовый результат", "оформи результат", "приступи к выполнению",
+    ),
+    "planning_review": (
+        "реализуй", "реализовать", "напиши код", "написать код", "сделай код",
+        "выполни задачу", "выполнить задачу", "сделай отчёт", "сделать отчёт",
+        "сдай", "сдавай", "финальный", "финальную", "итоговый", "итоговую",
+        "готовый результат", "оформи результат", "приступи к выполнению",
+    ),
+    "execution": (
+        "сдай", "сдавай", "финальный", "финальную", "итоговый", "итоговую",
+        "заверши без проверки", "одобри сразу", "сдай проект", "прими работу",
+    ),
+    "validation": (
+        "сдай", "сдавай", "финальный", "финальную", "итоговый", "итоговую",
+        "заверши без проверки", "одобри сразу",
+    ),
+    "done": (),
+}
+
+# Промпт короткой проверки: решает LLM, не перепрыгнул ли ассистент этап.
+TRANSITION_GUARD_PROMPT = (
+    "Ты проверяешь, не перепрыгнул ли ассистент этап задачи.\n"
+    "Задача проходит контролируемые переходы: {chain}.\n"
+    "Текущий этап: {stage} ({stage_label}).\n"
+    "Ожидаемое действие: {expected_action}.\n"
+    "Разрешено на этом этапе: {allowed}.\n"
+    "Запрещено сейчас (относится к более поздним этапам): {forbidden}.\n\n"
+    "Запрос пользователя:\n{user_request}\n\n"
+    "Ответ ассистента:\n{assistant_reply}\n\n"
+    "Если ответ ассистента выполняет работу более позднего этапа — перепрыгивает "
+    "текущий (например, выдаёт итоговый результат без согласованного плана или "
+    "сдаёт финал без проверки), ответь строго в две строки:\n"
+    "НАРУШЕНИЕ: да\n"
+    "ПРИЧИНА: <объяснение, какой этап перепрыгнут и почему>\n"
+    "Если ассистент действует в рамках текущего этапа, ответь ровно одним словом: ОК."
+)
+
+_TRANSITION_GUARD_MARKER = "проверяешь, не перепрыгнул ли ассистент этап"
+
+
+def parse_transition_verdict(text: str) -> "TransitionVerdict":
+    """Разбирает ответ модели на проверку перепрыгивания этапа.
+
+    Возвращает :class:`TransitionVerdict`: ``violated`` — перепрыгнут ли этап,
+    ``reason`` — объяснение.
+    """
+    token = (text or "").strip()
+    if not token:
+        return TransitionVerdict(violated=False, reason="")
+    upper = token.upper()
+    if "НАРУШЕНИЕ" not in upper:
+        return TransitionVerdict(violated=False, reason="")
+    reason = ""
+    for line in token.splitlines():
+        line = line.strip()
+        if line.upper().startswith("ПРИЧИНА"):
+            _, _, value = line.partition(":")
+            reason = value.strip()
+    return TransitionVerdict(violated=bool(reason) or "да" in upper, reason=reason)
+
+
+@dataclass
+class TransitionVerdict:
+    """Вердикт проверки: перепрыгнул ли ассистент этап задачи."""
+
+    violated: bool
+    reason: str
+
+
 # Этап по умолчанию для новой задачи.
 DEFAULT_STAGE = "planning"
 
@@ -135,6 +243,11 @@ _STAGE_ORDER = {
 def _is_forward(from_stage: str, to_stage: str) -> bool:
     """Является ли переход ``from -> to`` движением вперёд по жизненному циклу."""
     return _STAGE_ORDER[to_stage] > _STAGE_ORDER[from_stage]
+
+
+def _lifecycle_chain() -> list[str]:
+    """Этапы жизненного цикла в порядке следования (для описания переходов)."""
+    return sorted(_STAGE_ORDER, key=_STAGE_ORDER.__getitem__)
 
 
 def _validate_stage(stage: str) -> str:
@@ -348,6 +461,10 @@ class TaskState:
             parts.append(f"- Текущий шаг: {self.step}")
         if self.expected_action:
             parts.append(f"- Ожидаемое действие: {self.expected_action}")
+        scope = STAGE_SCOPE.get(self.stage)
+        if scope:
+            parts.append(f"- Разрешено сейчас: {scope['allowed']}")
+            parts.append(f"- Запрещено сейчас (перепрыгнуть этап нельзя): {scope['forbidden']}")
         if self.paused:
             parts.append("- Статус: задача приостановлена (resume — продолжить)")
         elif self.completed:
@@ -387,22 +504,25 @@ class TaskStateMachine:
     переживает перезапуск (состояние сохраняется в JSON-файле сессии).
     """
 
-    def __init__(self, state: TaskState | None = None, auto_advance: bool = False) -> None:
+    def __init__(self, state: TaskState | None = None, auto_advance: bool = False,
+                 strict: bool = True) -> None:
         self._state = state or TaskState()
         self._auto_advance = auto_advance
+        self._strict = bool(strict)
 
     @classmethod
     def begin(cls, description: str, expected_action: str = "",
-              auto_advance: bool = False) -> "TaskStateMachine":
+              auto_advance: bool = False, strict: bool = True) -> "TaskStateMachine":
         """Создаёт автомат для только что начатой задачи."""
-        return cls(TaskState.begin(description, expected_action), auto_advance)
+        return cls(TaskState.begin(description, expected_action), auto_advance, strict)
 
     @classmethod
-    def from_dict(cls, data: dict | None, auto_advance: bool = False) -> "TaskStateMachine":
+    def from_dict(cls, data: dict | None, auto_advance: bool = False,
+                  strict: bool = True) -> "TaskStateMachine":
         """Восстанавливает автомат из словаря (None — пустое состояние)."""
         if not data:
-            return cls(auto_advance=auto_advance)
-        return cls(TaskState.from_dict(data), auto_advance)
+            return cls(auto_advance=auto_advance, strict=strict)
+        return cls(TaskState.from_dict(data), auto_advance, strict)
 
     @property
     def auto_advance(self) -> bool:
@@ -412,6 +532,15 @@ class TaskStateMachine:
     @auto_advance.setter
     def auto_advance(self, value: bool) -> None:
         self._auto_advance = bool(value)
+
+    @property
+    def strict(self) -> bool:
+        """Строго ли контролировать переходы (запрещать перепрыгивание этапа)."""
+        return self._strict
+
+    @strict.setter
+    def strict(self, value: bool) -> None:
+        self._strict = bool(value)
 
     @property
     def state(self) -> TaskState:
@@ -529,6 +658,73 @@ class TaskStateMachine:
             role = message.get("role")
             content = str(message.get("content", ""))
             lines.append(f"{role}: {content[:1200]}")
+        return "\n".join(lines)
+
+    def guard_request(self, user_request: str) -> str | None:
+        """Проверяет, не пытается ли пользователь перепрыгнуть текущий этап.
+
+        Детерминированная проверка по ключевым словам текущего этапа (без вызова
+        LLM): если запрос относится к более позднему этапу, возвращает текст
+        причины (для отказа ассистента), иначе — None. Позволяет ассистенту
+        удержать этап, не перепрыгивая его, даже если пользователь просит
+        «сделать сразу».
+        """
+        if not self.has_task() or self._state.is_done():
+            return None
+        forbidden = STAGE_JUMP_KEYWORDS.get(self._state.stage, ())
+        if not forbidden:
+            return None
+        text = user_request.lower()
+        hits = [keyword for keyword in forbidden if keyword in text]
+        if not hits:
+            return None
+        scope = STAGE_SCOPE.get(self._state.stage, {})
+        return (
+            f"Запрос относится к более позднему этапу, а сейчас задача на этапе "
+            f"{self._state.stage} ({self._state.stage_label()}). Прежде чем "
+            f"«{', '.join(hits)}», нужно: {scope.get('allowed', 'завершить текущий этап')}. "
+            f"Сначала выполните ожидаемое действие: "
+            f"{self._state.expected_action or 'не задано'}."
+        )
+
+    def transition_guard_messages(self, user_request: str,
+                                  assistant_reply: str) -> list[dict]:
+        """Сообщения короткой проверки: перепрыгнул ли ассистент этап задачи.
+
+        Возвращает пустой список, если задачи нет, она завершена или этап —
+        финальный (переходить вперёд некуда).
+        """
+        if not self.has_task() or self._state.is_done():
+            return []
+        scope = STAGE_SCOPE.get(self._state.stage, {})
+        content = TRANSITION_GUARD_PROMPT.format(
+            chain=" → ".join(STAGE_LABELS.get(s, s) for s in _lifecycle_chain()),
+            stage=self._state.stage,
+            stage_label=self._state.stage_label(),
+            expected_action=self._state.expected_action or "не задано",
+            allowed=scope.get("allowed", "действовать в рамках текущего этапа"),
+            forbidden=scope.get("forbidden", "нет"),
+            user_request=user_request,
+            assistant_reply=assistant_reply,
+        )
+        return [
+            {"role": "system", "content": _TRANSITION_GUARD_MARKER},
+            {"role": "user", "content": content},
+        ]
+
+    def refusal_message(self, reason: str) -> str:
+        """Текст отказа ассистента: объясняет, какой этап перепрыгнут и почему."""
+        lines = [
+            "Я не могу перейти на следующий этап раньше времени — "
+            "переходы задачи контролируются."
+        ]
+        if reason:
+            lines.append(f"Причина: {reason}")
+        lines.append(
+            "Выполните ожидаемое действие текущего этапа, затем отметьте этап "
+            "выполненным (complete) — только после этого будет разрешён переход "
+            f"на следующий этап ({', '.join(TRANSITIONS[self._state.stage]) or 'нет'})."
+        )
         return "\n".join(lines)
 
     def summarize(self) -> str:

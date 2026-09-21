@@ -24,7 +24,8 @@
   },
   "task": {
     "enabled": true,
-    "auto_advance": true
+    "auto_advance": true,
+    "strict": true
   },
   "invariants": {
     "enabled": true,

@@ -1,3 +1,62 @@
+# Day 15: Controlled state transitions of a task
+
+`transition_scenarios.py` makes the agent's **task lifecycle strictly controlled**.
+A task moves through `planning → execution → validation → done`, and the assistant
+**cannot jump a stage**. Transitions are controlled at two levels:
+
+1. **Valid states and allowed transitions.** Each stage lists what is allowed
+   (`STAGE_SCOPE` in `agent/task_state.py`) and what belongs to a later stage and
+   is forbidden now. `TRANSITIONS` defines which stage may follow which: `planning`
+   does not jump straight to `validation`, and `execution` cannot reach `done`
+   without `validation`. While the current stage is not marked complete, a forward
+   transition is rejected by `set_stage()`/`advance()`.
+2. **The assistant cannot jump a stage.** The task's system message now tells the
+   model what is allowed and what is forbidden on the current stage. If the user
+   asks for work of a later stage (implementation before an approved plan, or a
+   final deliverable without validation), the assistant **refuses** and holds the
+   stage — this is a deterministic check (`guard_request`), no LLM call needed. If
+   the assistant itself produces a result of a later stage, a short guard check
+   (`transition_guard_messages` + `parse_transition_verdict`) **replaces** the
+   answer with a refusal, so a jumped stage never lands in history.
+
+The scenario walks through: valid states and allowed transitions, "cannot do
+implementation before an approved plan", "cannot finalize without validation",
+an attempt to move to an invalid state being rejected, the assistant's reaction
+(refusal) when it would jump a stage, and a pause/resume that continues from the
+same stage without repeated explanations.
+
+## What was added
+
+- `agent/task_state.py` — `STAGE_SCOPE` (per-stage allowed/forbidden work),
+  `STAGE_JUMP_KEYWORDS` (deterministic jump detection), `TRANSITION_GUARD_PROMPT` /
+  `parse_transition_verdict` / `TransitionVerdict` (LLM guard for the reply).
+  `TaskState.system_message()` now includes the allowed/forbidden scope.
+  `TaskStateMachine` gains `strict` (default on), `guard_request()`,
+  `transition_guard_messages()` and `refusal_message()`.
+- `agent/agent.py` — accepts the strict task; `_stage_guard_reason()` blocks a
+  user's jump before calling the model, and `_enforce_stage_guard()` runs after
+  each reply and replaces a jumping answer with a refusal.
+  `last_transition_violation` exposes whether a refusal fired.
+- `agent/cli.py` — reads `task.strict` from config, adds the `/task_strict`
+  toggle, and prints a notice when a stage jump was refused.
+- `agent/transition_scenarios.py` — live or demo (`--demo`) scenario that shows
+  the controlled lifecycle, blocked jumps, and correct continuation after a pause.
+
+Config keys (in the `task` section): `enabled`, `auto_advance`, `strict`.
+
+## Run
+
+```bash
+cd ai_advent && python3 -m agent.transition_scenarios --demo   # fixed scenario, offline
+cd ai_advent && python3 -m agent.transition_scenarios          # live input, offline
+cd ai_advent && python3 -m agent.transition_scenarios --online # real API requests
+```
+
+Commands (not sent to the model): `task`, `task_new <описание>`,
+`task_next`, `task_stage <этап>`, `task_step <N>`, `task_expected <действие>`,
+`task_complete`, `task_auto`, `task_strict`, `task_pause`, `task_resume`,
+`task_done`, `task_clear`, `context`, `exit`.
+
 # Day 14: Invariants and state constraints
 
 `invariant_scenarios.py` makes the assistant work within a set of **invariants** —

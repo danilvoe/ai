@@ -12,7 +12,11 @@ from .invariants import Invariants, parse_guard_verdict
 from .llm_client import Completion, LLMClient
 from .memory import MemoryLayers
 from .personalization import Personalization
-from .task_state import TaskStateMachine, parse_completion_verdict
+from .task_state import (
+    TaskStateMachine,
+    parse_completion_verdict,
+    parse_transition_verdict,
+)
 from .tokens import (
     ContextOverflowError,
     UsageReport,
@@ -80,6 +84,7 @@ class Agent:
         self._invariants = invariants
         self._last_prompt_tokens: int | None = None
         self._last_guard_violation: bool = False
+        self._last_transition_violation: bool = False
         self._usage = UsageReport(
             input_price=client.config.get("input_cost_per_million"),
             output_price=client.config.get("output_cost_per_million"),
@@ -133,6 +138,11 @@ class Agent:
     def last_guard_violation(self) -> bool:
         """Нарушал ли последний ответ агента инварианты (True — был отказ)."""
         return self._last_guard_violation
+
+    @property
+    def last_transition_violation(self) -> bool:
+        """Перепрыгивал ли последний ответ агента этап задачи (True — был отказ)."""
+        return self._last_transition_violation
 
     def save_task(self) -> None:
         """Сохраняет текущее состояние задачи в сессию (чтобы оно пережило перезапуск)."""
@@ -240,6 +250,14 @@ class Agent:
         if self._context_strategy is not None:
             self._context_strategy.on_user_message(self._conversation, user_request)
         context_messages = self.context_messages
+
+        # Контролируемые переходы: не пытается ли пользователь перепрыгнуть этап.
+        guard_reason = self._stage_guard_reason(user_request)
+        if guard_reason is not None:
+            reply = self._stage_refusal(guard_reason)
+            self._record_reply(reply, user_request, history_tokens)
+            return reply
+
         try:
             reply = self._client.complete(context_messages)
         except Exception:
@@ -249,14 +267,26 @@ class Agent:
         self._last_prompt_tokens = reply.prompt_tokens
 
         reply = self._enforce_invariants(user_request, reply)
+        reply = self._enforce_stage_guard(user_request, reply)
 
+        self._record_reply(reply, user_request, history_tokens)
+
+        self._maybe_auto_advance_task(user_request, reply.content)
+
+        if self._compression.enabled:
+            compress(self._conversation, self._client, self._compression)
+
+        return reply
+
+    def _record_reply(self, reply: Completion, user_request: str, history_tokens: int) -> None:
+        """Фиксирует ответ в истории и в накопительной статистике токенов."""
         response_tokens = (
             reply.completion_tokens
             if reply.completion_tokens is not None
             else estimate_tokens(reply.content)
         )
         self._usage.record(
-            request_tokens=request_tokens,
+            request_tokens=estimate_tokens(user_request),
             history_tokens=history_tokens,
             response_tokens=response_tokens,
             prompt_tokens=reply.prompt_tokens,
@@ -266,12 +296,53 @@ class Agent:
         if self._context_strategy is not None:
             self._context_strategy.on_reply(self._conversation, reply)
 
-        self._maybe_auto_advance_task(user_request, reply.content)
+    def _stage_guard_reason(self, user_request: str) -> str | None:
+        """Причина отказа, если пользователь пытается перепрыгнуть этап (иначе None)."""
+        task = self._task
+        if task is None or not task.strict:
+            return None
+        return task.guard_request(user_request)
 
-        if self._compression.enabled:
-            compress(self._conversation, self._client, self._compression)
+    def _stage_refusal(self, reason: str) -> Completion:
+        """Отказ ассистента: этап нельзя перепрыгнуть (детерминированная проверка)."""
+        content = self._task.refusal_message(reason) if self._task is not None else reason
+        return Completion(
+            content=content,
+            model=self._client.config.get("model"),
+            prompt_tokens=0,
+            completion_tokens=estimate_tokens(content),
+        )
 
-        return reply
+    def _enforce_stage_guard(self, user_request: str, reply: Completion) -> Completion:
+        """Проверяет ответ агента на перепрыгивание этапа задачи.
+
+        Работает, только если состояние задачи задано и ``task.strict`` включён.
+        Коротким запросом к LLM агент выясняет, не перепрыгнул ли ответ текущий
+        этап (не выдал ли он результат более позднего этапа). Если перепрыгнул —
+        ответ заменяется отказом с объяснением, иначе — остаётся как есть.
+        """
+        self._last_transition_violation = False
+        task = self._task
+        if task is None or not task.strict:
+            return reply
+        check_messages = task.transition_guard_messages(user_request, reply.content)
+        if not check_messages:
+            return reply
+        try:
+            verdict_text = self._client.complete(check_messages).content
+        except Exception:
+            # Проверка не критична: если она не удалась, ответ оставляем как есть.
+            return reply
+        verdict = parse_transition_verdict(verdict_text)
+        if not verdict.violated:
+            return reply
+        self._last_transition_violation = True
+        return Completion(
+            content=task.refusal_message(verdict.reason),
+            model=reply.model,
+            prompt_tokens=reply.prompt_tokens,
+            completion_tokens=estimate_tokens(task.refusal_message(verdict.reason)),
+        )
 
     def _enforce_invariants(self, user_request: str, reply: Completion) -> Completion:
         """Проверяет ответ агента на нарушение инвариантов.
