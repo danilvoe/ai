@@ -731,6 +731,8 @@ def main() -> None:
 
         print(f"\nАгент: {reply.content}\n")
         print_usage(agent)
+        if agent.task is not None:
+            print_task_status(agent)
 
 
 if __name__ == "__main__":
