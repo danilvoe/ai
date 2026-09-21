@@ -47,7 +47,10 @@ def _task_from_config(conversation) -> TaskStateMachine | None:
     section = config.get("task", {}) or {}
     if not section.get("enabled", False):
         return None
-    return TaskStateMachine.from_dict(conversation.task)
+    return TaskStateMachine.from_dict(
+        conversation.task,
+        auto_advance=section.get("auto_advance", False),
+    )
 
 
 def _personalization_from_config() -> Personalization | None:
@@ -371,6 +374,14 @@ def _handle_task_command(agent: Agent, command: str) -> bool:
             print(f"{exc}\n")
         return True
 
+    if verb in ("task_auto", "автопродвижение"):
+        task.auto_advance = not task.auto_advance
+        agent.save_task()
+        state = "включено" if task.auto_advance else "выключено"
+        print(f"Автопродвижение задачи: {state} "
+              f"(задача сама переходит дальше, когда этап выполнен).\n")
+        return True
+
     if verb in ("task_clear", "сбросить"):
         task.reset()
         agent.save_task()
@@ -591,6 +602,7 @@ def print_help() -> None:
   /task_new <описание>   — начать новую задачу (этап planning)
   /task_expected <действие> — задать ожидаемое действие
   /task_complete         — отметить этап выполненным (разрешает /task_next)
+  /task_auto             — вкл/выкл автопродвижение (задача сама идёт дальше)
   /task_next             — перевести задачу на следующий этап по автомату
   /task_stage <этап>     — перейти на этап: planning | execution | validation | done
   /task_step <N>         — установить номер текущего шага (только вперёд)
@@ -641,7 +653,8 @@ def _dispatch_command(agent: Agent, line: str) -> bool:
                 "задача_new", "task_next", "следующий_этап", "далее",
                 "task_stage", "этап", "task_step", "шаг",
                 "task_expected", "ожидание", "task_complete", "выполнено",
-                "готово_этап", "task_pause", "пауза",
+                "готово_этап", "task_auto", "автопродвижение",
+                "task_pause", "пауза",
                 "приостановить", "task_resume", "продолжить", "возобновить",
                 "task_done", "готово", "завершить", "task_clear", "сбросить"):
         return _handle_task_command(agent, cmd)

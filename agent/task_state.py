@@ -54,6 +54,28 @@ STAGE_LABELS = {
 # Этап по умолчанию для новой задачи.
 DEFAULT_STAGE = "planning"
 
+# Промпт короткой проверки: решает LLM, выполнено ли ожидаемое действие.
+COMPLETION_PROMPT = (
+    "Ты проверяешь, выполнено ли ожидаемое действие текущего этапа задачи.\n"
+    "Текущий этап: {stage} ({stage_label}).\n"
+    "Ожидаемое действие: {expected_action}.\n\n"
+    "Последний запрос пользователя:\n{user_request}\n\n"
+    "Твой последний ответ:\n{assistant_reply}\n\n"
+    "Ответь ровно одним словом: «да», если ожидаемое действие выполнено, "
+    "иначе «нет». Больше ничего не пиши."
+)
+
+_COMPLETION_MARKER = "проверяешь, выполнено ли ожидаемое действие"
+
+
+def parse_completion_verdict(text: str) -> bool:
+    """Разбирает ответ модели на проверку завершения этапа.
+
+    True, если модель ответила «да»/«yes» (ожидаемое действие выполнено).
+    """
+    token = (text or "").strip().lower()
+    return any(word in token for word in ("да", "yes", "выполнено", "готово"))
+
 # Порядок этапов жизненного цикла — для определения, куда ведёт переход.
 # Переход "вперёд" (к более позднему этапу) требует, чтобы текущий этап был
 # выполнен. "Назад" (корректирующий возврат, напр. validation -> execution при
@@ -306,20 +328,31 @@ class TaskStateMachine:
     переживает перезапуск (состояние сохраняется в JSON-файле сессии).
     """
 
-    def __init__(self, state: TaskState | None = None) -> None:
+    def __init__(self, state: TaskState | None = None, auto_advance: bool = False) -> None:
         self._state = state or TaskState()
+        self._auto_advance = auto_advance
 
     @classmethod
-    def begin(cls, description: str, expected_action: str = "") -> "TaskStateMachine":
+    def begin(cls, description: str, expected_action: str = "",
+              auto_advance: bool = False) -> "TaskStateMachine":
         """Создаёт автомат для только что начатой задачи."""
-        return cls(TaskState.begin(description, expected_action))
+        return cls(TaskState.begin(description, expected_action), auto_advance)
 
     @classmethod
-    def from_dict(cls, data: dict | None) -> "TaskStateMachine":
+    def from_dict(cls, data: dict | None, auto_advance: bool = False) -> "TaskStateMachine":
         """Восстанавливает автомат из словаря (None — пустое состояние)."""
         if not data:
-            return cls()
-        return cls(TaskState.from_dict(data))
+            return cls(auto_advance=auto_advance)
+        return cls(TaskState.from_dict(data), auto_advance)
+
+    @property
+    def auto_advance(self) -> bool:
+        """Автоматически ли продвигать задачу, когда этап выполнен."""
+        return self._auto_advance
+
+    @auto_advance.setter
+    def auto_advance(self, value: bool) -> None:
+        self._auto_advance = bool(value)
 
     @property
     def state(self) -> TaskState:
@@ -401,6 +434,27 @@ class TaskStateMachine:
     def system_message(self) -> str:
         """System-сообщение с текущим состоянием задачи."""
         return self._state.system_message()
+
+    def completion_check_messages(self, user_request: str, assistant_reply: str) -> list[dict]:
+        """Сообщения короткой проверки: выполнено ли ожидаемое действие этапа.
+
+        Возвращает пустой список, если задачи нет или она завершена — тогда
+        проверять нечего. Иначе возвращает system+user сообщения для модели,
+        ответ которых разбирается через :func:`parse_completion_verdict`.
+        """
+        if not self.has_task() or self._state.is_done():
+            return []
+        content = COMPLETION_PROMPT.format(
+            stage=self._state.stage,
+            stage_label=self._state.stage_label(),
+            expected_action=self._state.expected_action or "не задано",
+            user_request=user_request,
+            assistant_reply=assistant_reply,
+        )
+        return [
+            {"role": "system", "content": _COMPLETION_MARKER},
+            {"role": "user", "content": content},
+        ]
 
     def summarize(self) -> str:
         """Краткая сводка состояния задачи."""

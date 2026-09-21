@@ -25,25 +25,33 @@ move forward while the current stage is not done. A corrective rollback
 (`validation → execution` when validation fails) stays allowed without
 completion. Steps move only forward too.
 
+**Auto-advance** (`task.auto_advance`): when enabled, the agent does not wait
+for a manual `/task_complete`. After each answer it makes a short completion
+check to the LLM ("is the current stage's expected action fulfilled?") and, if
+the model says yes, automatically completes the stage and moves the task on.
+You can toggle it live with `/task_auto`.
+
 ## What was added
 
 - `agent/task_state.py` — `TaskState` (stage/step/expected_action/description/
-  paused/log) and `TaskStateMachine` (wraps the state, validates transitions,
-  `system_message()`, `summarize()`).
+  paused/completed/log) and `TaskStateMachine` (wraps the state, validates
+  transitions, auto-advance flag, completion check, `system_message()`,
+  `summarize()`).
 - `agent/agent.py` — accepts `task`; the state's system message is inserted
   after the profile and counted in `context_tokens`. `save_task()` persists the
-  state into the session.
+  state into the session. `_maybe_auto_advance_task()` runs the completion check
+  and advances automatically.
 - `agent/conversation.py` — stores a `task` block in the session JSON, so the
   state survives a restart.
 - `agent/cli.py` — reads the `task` section and adds commands: `/task`,
   `/task_new <описание>`, `/task_next`, `/task_stage <этап>`, `/task_step <N>`,
-  `/task_expected <действие>`, `/task_complete`, `/task_pause`, `/task_resume`,
-  `/task_done`, `/task_clear`.
+  `/task_expected <действие>`, `/task_complete`, `/task_auto`, `/task_pause`,
+  `/task_resume`, `/task_done`, `/task_clear`.
 - `agent/task_scenarios.py` — live or demo (`--demo`) scenario that walks a task
-  through its full lifecycle, shows an illegal transition being rejected, a
-  pause and a resume without repeated explanations.
+  through its full lifecycle with auto-advance, shows an illegal transition
+  being rejected, a pause and a resume without repeated explanations.
 
-Config key (in the `task` section): `enabled`.
+Config keys (in the `task` section): `enabled`, `auto_advance`.
 
 ## Run
 
@@ -55,8 +63,8 @@ cd ai_advent && python3 -m agent.task_scenarios --online # real API requests
 
 Commands (not sent to the model): `task`, `task_new <описание>`,
 `task_next`, `task_stage <этап>`, `task_step <N>`, `task_expected <действие>`,
-`task_complete`, `task_pause`, `task_resume`, `task_done`, `task_clear`,
-`context`, `exit`.
+`task_complete`, `task_auto`, `task_pause`, `task_resume`, `task_done`,
+`task_clear`, `context`, `exit`.
 
 # Day 12: Personalization of the assistant — user profile over the memory model
 

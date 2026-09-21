@@ -41,17 +41,27 @@ from agent.agent import Agent
 from agent.config import load_config
 from agent.conversation import SessionStore
 from agent.llm_client import Completion, LLMClient
-from agent.task_state import TaskStateMachine
+from agent.task_state import TaskState, TaskStateMachine
 from agent.tokens import estimate_messages_tokens, estimate_tokens
 
 
 class FakeClient:
-    """Имитирует LLM: показывает, какое состояние задачи ушло в модель."""
+    """Имитирует LLM: показывает состояние задачи и отвечает на проверку этапа.
+
+    На обычные запросы показывает, какое состояние задачи ушло в модель. На
+    короткую проверку завершения этапа отвечает «да», если пользователь дал
+    содержательное сообщение (данные предоставлены), иначе «нет».
+    """
 
     def __init__(self, config: dict) -> None:
         self.config = config
 
     def complete(self, messages, temperature=None, max_tokens=None) -> Completion:
+        # Короткая проверка завершения этапа (маркер в system-сообщении).
+        if any(m.get("content") == "проверяешь, выполнено ли ожидаемое действие"
+               for m in messages):
+            return self._completion_verdict(messages)
+
         system_blocks = [m for m in messages if m.get("role") == "system"]
         task_block = next(
             (m["content"] for m in system_blocks if "Текущая задача:" in m["content"]),
@@ -72,6 +82,18 @@ class FakeClient:
             model=self.config["model"],
             prompt_tokens=estimate_messages_tokens(messages),
             completion_tokens=estimate_tokens(content),
+        )
+
+    def _completion_verdict(self, messages: list[dict]) -> Completion:
+        """Возвращает «да», если в запросе пользователя есть данные (не служебное)."""
+        text = " ".join(m.get("content", "") for m in messages if m.get("role") == "user")
+        verbose = len(text.split()) > 5  # не пустышка и не команда — есть данные
+        verdict = "да" if verbose else "нет"
+        return Completion(
+            content=verdict,
+            model=self.config["model"],
+            prompt_tokens=estimate_messages_tokens(messages),
+            completion_tokens=estimate_tokens(verdict),
         )
 
 
@@ -109,101 +131,70 @@ def show_context(agent: Agent) -> None:
 
 
 def run_scenario(config: dict, offline: bool) -> None:
-    """Прогоняет фиксированный сценарий: жизненный цикл задачи + пауза."""
+    """Прогоняет фиксированный сценарий: автопродвижение + пауза + валидация."""
     print("=" * 62)
-    print("Состояние задачи как конечный автомат")
+    print("Состояние задачи как конечный автомат (автопродвижение)")
     print("=" * 62)
     print(
         "Этапы: planning → execution → validation → done\n"
-        "Недопустимые переходы отклоняются; пауза возможна на любом этапе.\n"
+        "Автопродвижение: задача сама переходит дальше, когда данные предоставлены.\n"
+        "Пауза возможна на любом этапе; недопустимые переходы отклоняются.\n"
     )
 
-    task = TaskStateMachine.begin(
-        description="Написать отчёт о продажах за месяц",
-        expected_action="уточнить период и данные",
+    task = TaskStateMachine(
+        TaskState.begin(
+            description="Написать отчёт о продажах за месяц",
+            expected_action="уточнить период и данные",
+        ),
+        auto_advance=True,
     )
     agent = new_agent(config, offline, task)
 
-    print("--- 1. Начало задачи (planning) ---")
+    print("--- 1. Начало задачи (planning). Пользователь даёт данные ---")
     print(task.summarize())
     print()
-    print("Запрос модели (состояние уже уходит в контекст):")
-    reply = agent.ask("Начинаем готовить отчёт")
+    reply = agent.ask("Нужен отчёт по продажам за март, вот данные: 120, 145, 133.")
     print(f"  ответ: {reply.content}")
-    print()
+    print(f"  состояние после хода: этап = {task.stage} (задача сдвинулась сама)\n")
 
-    print("--- 2. Попытка перейти на выполнение без завершения планирования ---")
-    try:
-        task.advance()
-    except ValueError as exc:
-        print(f"  отклонено автоматом: {exc}")
-    print()
+    print("--- 2. Пользователь даёт ещё данные — выполнение завершено сам ---")
+    reply = agent.ask("Добавь в отчёт сводку по регионам и итоговый вывод.")
+    print(f"  ответ: {reply.content}")
+    print(f"  состояние после хода: этап = {task.stage}\n")
 
-    print("--- 3. Планирование выполнено -> переход в выполнение (execution) ---")
-    task.complete()
-    agent.save_task()
-    task.advance()
-    agent.save_task()
-    task.set_step(1)
-    agent.save_task()
-    task.set_expected_action("собрать данные и оформить отчёт")
+    print("--- 3. Пауза на любом этапе ---")
+    task.pause()
     agent.save_task()
     print(task.summarize())
     print()
 
-    print("--- 4. Попытка недопустимого перехода (execution -> planning) ---")
+    print("--- 4. Возобновление с того же места ---")
+    task.resume()
+    agent.save_task()
+    print("После resume описание и ожидание на месте — без повторных объяснений:")
+    print("  " + task.system_message().replace("\n", "\n  "))
+    print()
+
+    print("--- 5. Недопустимый переход отклоняется ---")
     try:
         task.set_stage("planning")
     except ValueError as exc:
         print(f"  отклонено автоматом: {exc}")
     print()
 
-    print("--- 5. Выполнение завершено -> переход в проверку (validation) ---")
-    task.complete()
+    print("--- 6. Корректирующий возврат validation -> execution разрешён ---")
+    task.set_stage("validation")
     agent.save_task()
-    task.advance()
+    print(task.summarize())
+    print()
+    task.set_stage("execution")
     agent.save_task()
-    task.set_expected_action("проверить цифры и соответствие данным")
+    task.set_expected_action("исправить найденные расхождения")
     agent.save_task()
     print(task.summarize())
     print()
 
-    print("--- 6. Пауза на этапе проверки (на любом этапе) ---")
-    task.pause()
-    agent.save_task()
-    print(task.summarize())
-    print("Состояние в запросе (пауза не ломает автомат):")
-    reply = agent.ask("Поставь на паузу")
-    print(f"  ответ: {reply.content}")
-    print()
-
-    print("--- 7. Возобновление с того же места ---")
-    task.resume()
-    agent.save_task()
-    print(task.summarize())
-    print("После resume описание и ожидание на месте — без повторных объяснений:")
-    print("  " + task.system_message().replace("\n", "\n  "))
-    print()
-
-    print("--- 8. Проверка провалена -> возврат на выполнение ---")
-    try:
-        task.set_stage("execution")
-        agent.save_task()
-        task.set_expected_action("исправить найденные расхождения")
-        agent.save_task()
-    except ValueError as exc:
-        print(f"  отклонено: {exc}")
-    print(task.summarize())
-    print()
-
-    print("--- 9. Переход из execution в done напрямую запрещён ---")
-    try:
-        task.set_stage("done")
-    except ValueError as exc:
-        print(f"  отклонено автоматом: {exc}")
-    print()
-
-    print("--- 10. Повторная проверка -> done ---")
+    print("--- 7. Финал: execution -> validation -> done ---")
     task.complete()
     agent.save_task()
     task.set_stage("validation")
@@ -217,9 +208,6 @@ def run_scenario(config: dict, offline: bool) -> None:
     print(task.summarize())
     print()
     print("Готово: задача завершена, переходов дальше нет.")
-    reply = agent.ask("Итог по задаче")
-    print(f"  ответ: {reply.content}")
-    print()
 
     print("--- Проверка: состояние задачи уходит в контекст ---")
     show_context(agent)
@@ -227,14 +215,15 @@ def run_scenario(config: dict, offline: bool) -> None:
 
 def run_interactive(config: dict, offline: bool) -> None:
     """Живой ввод: пользователь сам управляет конечным автоматом задачи."""
-    task = TaskStateMachine()
+    task = TaskStateMachine(auto_advance=True)
     agent = new_agent(config, offline, task)
 
-    print("Состояние задачи (конечный автомат) включено.")
-    print("Начните: /task_new <описание>, далее /task_complete, /task_next")
+    print("Состояние задачи (конечный автомат) включено, автопродвижение включено.")
+    print("Дайте данные — задача сама перейдёт на следующий этап.")
+    print("Начните: /task_new <описание>, далее просто пишите данные")
     print("Команды со слэшем: /help /task /task_new /task_complete /task_next "
-          "/task_stage /task_step /task_expected /task_pause /task_resume "
-          "/task_done /task_clear /context")
+          "/task_auto /task_stage /task_step /task_expected /task_pause "
+          "/task_resume /task_done /task_clear /context")
     while True:
         try:
             line = input("\nВы: ").strip()
@@ -259,7 +248,7 @@ def run_interactive(config: dict, offline: bool) -> None:
         rest = cmd.split(maxsplit=1)[1] if len(cmd.split()) > 1 else ""
         if verb in ("help", "?"):
             print(
-                "/task  /task_new <описание>  /task_complete  /task_next\n"
+                "/task  /task_new <описание>  /task_complete  /task_next  /task_auto\n"
                 "/task_stage <этап>  /task_step <N>  /task_expected <действие>\n"
                 "/task_pause  /task_resume  /task_done  /task_clear  /context  /exit\n"
             )
@@ -282,6 +271,12 @@ def run_interactive(config: dict, offline: bool) -> None:
             else:
                 print("Этап уже выполнен.\n")
             print(task.summarize() + "\n")
+            continue
+        if verb in ("task_auto", "автопродвижение"):
+            task.auto_advance = not task.auto_advance
+            agent.save_task()
+            state = "включено" if task.auto_advance else "выключено"
+            print(f"Автопродвижение: {state}.\n")
             continue
         if verb in ("task_next", "следующий_этап", "далее"):
             try:

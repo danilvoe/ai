@@ -11,7 +11,7 @@ from .conversation import Conversation, SessionStore
 from .llm_client import Completion, LLMClient
 from .memory import MemoryLayers
 from .personalization import Personalization
-from .task_state import TaskStateMachine
+from .task_state import TaskStateMachine, parse_completion_verdict
 from .tokens import (
     ContextOverflowError,
     UsageReport,
@@ -224,7 +224,36 @@ class Agent:
         if self._context_strategy is not None:
             self._context_strategy.on_reply(self._conversation, reply)
 
+        self._maybe_auto_advance_task(user_request, reply.content)
+
         if self._compression.enabled:
             compress(self._conversation, self._client, self._compression)
 
         return reply
+
+    def _maybe_auto_advance_task(self, user_request: str, assistant_reply: str) -> None:
+        """Автоматически продвигает задачу, если этап выполнен.
+
+        Работает, только если включён ``task.auto_advance``. Агент коротким
+        запросом к LLM выясняет, выполнено ли ожидаемое действие текущего
+        этапа; если да — завершает этап и переходит на следующий по автомату.
+        """
+        task = self._task
+        if task is None or not task.auto_advance or task.is_done:
+            return
+        check_messages = task.completion_check_messages(user_request, assistant_reply)
+        if not check_messages:
+            return
+        try:
+            verdict = self._client.complete(check_messages)
+        except Exception:
+            # Проверка не критична: если она не удалась, задачу не двигаем.
+            return
+        if not parse_completion_verdict(verdict.content):
+            return
+        task.complete()
+        try:
+            task.advance()
+            self.save_task()
+        except ValueError:
+            self.save_task()
