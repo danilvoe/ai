@@ -26,6 +26,11 @@
     "enabled": true,
     "auto_advance": true
   },
+  "invariants": {
+    "enabled": true,
+    "path": "history/invariants.json",
+    "enforce": true
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

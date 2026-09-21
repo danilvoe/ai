@@ -1,3 +1,62 @@
+# Day 14: Invariants and state constraints
+
+`invariant_scenarios.py` makes the assistant work within a set of **invariants** —
+hard limits it must not violate: the chosen architecture, accepted technical
+decisions, stack constraints, and business rules. Unlike the dialog, invariants
+**live separately** in their own `invariants.json` and do not depend on what the
+conversation is about.
+
+Invariants are enforced in two complementary ways:
+
+1. **Explicitly in reasoning.** The invariants' system message is prepended to
+   every request (right after the profile, before the task), so the model sees
+   the limits *before* proposing a solution and is instructed to check each
+   candidate against every invariant.
+2. **By a guard check.** After the assistant answers, the agent runs a short
+   LLM check (`guard_check_messages` + `parse_guard_verdict`) — does the
+   proposal violate any invariant? If yes, the answer is **replaced** by a
+   refusal (`Invariants.refusal_message`) that names the violated invariant and
+   explains why it cannot be broken.
+
+So on a conflict between the request and an invariant the assistant **refuses**
+and explains exactly which invariant is violated and why. This works even if the
+model itself is "weak": the guard catches the violation and substitutes a
+refusal, so a violating proposal never lands in the history. When an invariant
+becomes obsolete, `/invariant_del <id>` removes it and the request becomes
+allowed again.
+
+## What was added
+
+- `agent/invariants.py` — `Invariant` (id, category, description, rationale),
+  `Invariants` (separate JSON store, `add`/`remove`/`get`/`clear`,
+  `system_message()`, `guard_check_messages()`, `refusal_message()`,
+  `summarize()`), `parse_guard_verdict`/`GuardVerdict`.
+- `agent/agent.py` — accepts `invariants`; their system message is inserted
+  after the profile and counted in `context_tokens`. After each answer
+  `_enforce_invariants()` runs the guard check and, on a violation, replaces the
+  reply with a refusal. `last_guard_violation` exposes whether a refusal fired.
+- `agent/cli.py` — reads the `invariants` section and adds commands:
+  `/invariant` (list), `/invariant_add <категория> <описание> [-- причина]`,
+  `/invariant_del <id>`, `/invariant_clear`, `/invariant_enforce`, plus a
+  refusal notice after replies.
+- `agent/invariant_scenarios.py` — live or demo (`--demo`) scenario that shows
+  invariants stored apart from the dialog, their system message in every
+  request, a model-side refusal on a conflict, a guard-caught violation, and the
+  request becoming allowed once the invariant is removed.
+
+Config keys (in the `invariants` section): `enabled`, `path`, `enforce`.
+
+## Run
+
+```bash
+cd ai_advent && python3 -m agent.invariant_scenarios --demo   # fixed scenario, offline
+cd ai_advent && python3 -m agent.invariant_scenarios          # live input, offline
+cd ai_advent && python3 -m agent.invariant_scenarios --online # real API requests
+```
+
+Commands (not sent to the model): `invariant`, `invariant_add <категория> <описание>`,
+`invariant_del <id>`, `invariant_clear`, `invariant_enforce`, `context`, `exit`.
+
 # Day 13: Task state as a finite state machine
 
 `task_scenarios.py` makes the agent's **task state** formal instead of a free

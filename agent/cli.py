@@ -3,12 +3,14 @@
 import json
 import sys
 import urllib.error
+from pathlib import Path
 
 from .agent import Agent
 from .compression import CompressionConfig
 from .config import load_config
 from .context import strategy_from_config
 from .conversation import SessionStore
+from .invariants import INVARIANT_CATEGORIES, Invariants
 from .llm_client import LLMClient
 from .memory import LONG_TERM_KINDS, MemoryLayers
 from .personalization import PREFERENCE_GROUPS, Personalization, UserProfile
@@ -38,6 +40,20 @@ def build_agent(conversation) -> Agent:
         memory=_memory_from_config(conversation),
         personalization=_personalization_from_config(),
         task=_task_from_config(conversation),
+        invariants=_invariants_from_config(),
+    )
+
+
+def _invariants_from_config() -> Invariants | None:
+    """Создаёт хранилище инвариантов из секции ``invariants`` (None — выключено)."""
+    config = load_config()
+    section = config.get("invariants", {}) or {}
+    if not section.get("enabled", False):
+        return None
+    path = section.get("path")
+    return Invariants(
+        path=Path(path) if path else None,
+        enforce=section.get("enforce", True),
     )
 
 
@@ -391,6 +407,89 @@ def _handle_task_command(agent: Agent, command: str) -> bool:
     return False
 
 
+def print_invariant_status(agent: Agent) -> None:
+    """Печатает все установленные инварианты агента."""
+    invariants = agent.invariants
+    if invariants is None:
+        print("Инварианты: выключены (см. секцию invariants в config.json).\n")
+        return
+    print(invariants.summarize())
+    print()
+
+
+def _handle_invariant_command(agent: Agent, command: str) -> bool:
+    """Обрабатывает команды инвариантов. Возвращает True, если команда взята."""
+    invariants = agent.invariants
+    if invariants is None:
+        print("Инварианты: выключены (см. секцию invariants в config.json).\n")
+        return True
+
+    parts = command.strip().split(maxsplit=2)
+    verb = parts[0].lower()
+    rest = command.strip()[len(parts[0]):].strip()
+
+    if verb in ("invariant", "инвариант", "ограничения", "правила"):
+        print_invariant_status(agent)
+        return True
+
+    if verb in ("invariant_add", "добавить_инвариант", "новый_инвариант"):
+        if not rest:
+            print(
+                "Использование: invariant_add <категория> <описание> "
+                "[-- почему]\n"
+            )
+            return True
+        category, _, remainder = rest.partition(" ")
+        category = category.strip().lower()
+        rationale = ""
+        description = remainder.strip()
+        if "--" in description:
+            description, _, rationale = description.partition("--")
+            description, rationale = description.strip(), rationale.strip()
+        if category not in INVARIANT_CATEGORIES:
+            print(
+                f"Неизвестная категория: {category!r}. "
+                f"Допустимо: {', '.join(INVARIANT_CATEGORIES)}.\n"
+            )
+            return True
+        if not description:
+            print("Укажите описание инварианта после категории.\n")
+            return True
+        invariant = invariants.add(category, description, rationale)
+        print(
+            f"Добавлен инвариант {invariant.id} "
+            f"({invariant.category_label}): {invariant.description}"
+        )
+        if invariant.rationale:
+            print(f"  Причина: {invariant.rationale}")
+        print()
+        return True
+
+    if verb in ("invariant_del", "удалить_инвариант", "снять_инвариант"):
+        if not rest:
+            print("Использование: invariant_del <id>\n")
+            return True
+        if invariants.remove(rest):
+            print(f"Инвариант {rest} удалён.\n")
+        else:
+            print(f"Инвариант {rest} не найден.\n")
+        print_invariant_status(agent)
+        return True
+
+    if verb in ("invariant_clear", "очистить_инварианты"):
+        invariants.clear()
+        print("Все инварианты удалены.\n")
+        return True
+
+    if verb in ("invariant_enforce", "контроль"):
+        invariants.enforce = not invariants.enforce
+        state = "включена" if invariants.enforce else "выключена"
+        print(f"Проверка ответа на нарушение инвариантов: {state}.\n")
+        return True
+
+    return False
+
+
 def _handle_profile_command(agent: Agent, command: str) -> bool:
     """Обрабатывает команды персонализации. Возвращает True, если команда взята."""
     personalization = agent.personalization
@@ -611,6 +710,15 @@ def print_help() -> None:
   /task_done             — перевести задачу в состояние done
   /task_clear            — сбросить состояние задачи
 
+Инварианты (ограничения, которые ассистент не может нарушать):
+  /invariant             — показать все инварианты
+  /invariant_add <категория> <описание> [-- причина]
+                         — добавить инвариант (категория: architecture |
+                           tech_decision | stack | business_rule | custom)
+  /invariant_del <id>    — удалить инвариант
+  /invariant_clear       — удалить все инварианты
+  /invariant_enforce     — вкл/выкл проверку ответа на нарушение инвариантов
+
 Любая строка без слэша уходит модели как сообщение пользователя.
 """)
 
@@ -658,6 +766,12 @@ def _dispatch_command(agent: Agent, line: str) -> bool:
                 "приостановить", "task_resume", "продолжить", "возобновить",
                 "task_done", "готово", "завершить", "task_clear", "сбросить"):
         return _handle_task_command(agent, cmd)
+    if verb in ("invariant", "инвариант", "ограничения", "правила",
+                "invariant_add", "добавить_инвариант", "новый_инвариант",
+                "invariant_del", "удалить_инвариант", "снять_инвариант",
+                "invariant_clear", "очистить_инварианты",
+                "invariant_enforce", "контроль"):
+        return _handle_invariant_command(agent, cmd)
     print(f"Неизвестная команда: /{verb}. Введите /help для списка команд.\n")
     return True
 
@@ -702,6 +816,11 @@ def main() -> None:
         print("  команды: /task, /task_new, /task_next, /task_pause, /task_resume")
         if agent.task.has_task():
             print_task_status(agent)
+    if agent.invariants is not None:
+        print("Инварианты: включены (ограничения, которые нельзя нарушать).")
+        print("  команды: /invariant, /invariant_add, /invariant_del, "
+              "/invariant_enforce")
+        print_invariant_status(agent)
     print("Введите /help для списка команд.\n")
 
     while True:
@@ -730,6 +849,8 @@ def main() -> None:
             continue
 
         print(f"\nАгент: {reply.content}\n")
+        if agent.invariants is not None and agent.last_guard_violation:
+            print("(ассистент отказался: предложенное решение нарушало инвариант)\n")
         print_usage(agent)
         if agent.task is not None:
             print_task_status(agent)

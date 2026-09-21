@@ -8,6 +8,7 @@ from .compression import (
 )
 from .context import ContextStrategy
 from .conversation import Conversation, SessionStore
+from .invariants import Invariants, parse_guard_verdict
 from .llm_client import Completion, LLMClient
 from .memory import MemoryLayers
 from .personalization import Personalization
@@ -46,6 +47,14 @@ class Agent:
     Состояние подмешивается к запросу в виде system-сообщения и сохраняется
     в сессию, поэтому при паузе/возобновлении задача продолжается без
     повторных объяснений.
+
+    Если заданы ``invariants`` (см. agent/invariants.py), агент работает в
+    рамках жёстких ограничений — архитектура, принятые решения, стек,
+    бизнес-правила. Инварианты хранятся отдельно от диалога и подмешиваются
+    к каждому запросу как system-сообщение, поэтому модель учитывает их в
+    рассуждении. Если ``invariants.enforce`` включён, агент после ответа
+    прогоняет короткую проверку: не нарушает ли предложенное решение
+    инвариант. Если нарушает — ответ заменяется отказом с объяснением.
     """
 
     def __init__(
@@ -58,6 +67,7 @@ class Agent:
         memory: MemoryLayers | None = None,
         personalization: Personalization | None = None,
         task: TaskStateMachine | None = None,
+        invariants: Invariants | None = None,
     ) -> None:
         self._client = client
         self._conversation = conversation
@@ -67,7 +77,9 @@ class Agent:
         self._memory = memory
         self._personalization = personalization
         self._task = task
+        self._invariants = invariants
         self._last_prompt_tokens: int | None = None
+        self._last_guard_violation: bool = False
         self._usage = UsageReport(
             input_price=client.config.get("input_cost_per_million"),
             output_price=client.config.get("output_cost_per_million"),
@@ -112,6 +124,16 @@ class Agent:
         """Конечный автомат состояния задачи (None — состояние не используется)."""
         return self._task
 
+    @property
+    def invariants(self) -> Invariants | None:
+        """Инварианты агента (None — ограничения не используются)."""
+        return self._invariants
+
+    @property
+    def last_guard_violation(self) -> bool:
+        """Нарушал ли последний ответ агента инварианты (True — был отказ)."""
+        return self._last_guard_violation
+
     def save_task(self) -> None:
         """Сохраняет текущее состояние задачи в сессию (чтобы оно пережило перезапуск)."""
         if self._task is not None:
@@ -140,6 +162,15 @@ class Agent:
             return []
         return [{"role": "system", "content": prompt}]
 
+    def _invariant_messages(self) -> list[dict]:
+        """Список system-сообщений инвариантов (пусто, если инвариантов нет)."""
+        if self._invariants is None:
+            return []
+        prompt = self._invariants.system_message()
+        if not prompt:
+            return []
+        return [{"role": "system", "content": prompt}]
+
     @property
     def context_messages(self) -> list[dict]:
         """Сообщения, которые будут отправлены в модель.
@@ -152,6 +183,9 @@ class Agent:
         раньше памяти, так как задаёт общий стиль и ограничения.
         Если задано состояние задачи, оно вставляется следом за профилем —
         это текущая цель, поверх стиля.
+        Если заданы инварианты, они вставляются сразу после профиля, но перед
+        состоянием задачи: это жёсткие рамки, которые модель обязана соблюдать
+        в любом решении, поэтому они идут раньше цели.
         """
         if self._context_strategy is not None:
             messages = self._context_strategy.build_messages(self._conversation)
@@ -159,7 +193,12 @@ class Agent:
             messages = build_context_messages(self._conversation)
         if self._memory is not None:
             messages = self._memory.build_memory_context() + messages
-        return self._profile_messages() + self._task_messages() + messages
+        return (
+            self._profile_messages()
+            + self._invariant_messages()
+            + self._task_messages()
+            + messages
+        )
 
     @property
     def context_tokens(self) -> int:
@@ -180,6 +219,7 @@ class Agent:
         if self._memory is not None:
             tokens += estimate_messages_tokens(self._memory.build_memory_context())
         tokens += estimate_messages_tokens(self._profile_messages())
+        tokens += estimate_messages_tokens(self._invariant_messages())
         tokens += estimate_messages_tokens(self._task_messages())
         return tokens
 
@@ -208,6 +248,8 @@ class Agent:
 
         self._last_prompt_tokens = reply.prompt_tokens
 
+        reply = self._enforce_invariants(user_request, reply)
+
         response_tokens = (
             reply.completion_tokens
             if reply.completion_tokens is not None
@@ -230,6 +272,37 @@ class Agent:
             compress(self._conversation, self._client, self._compression)
 
         return reply
+
+    def _enforce_invariants(self, user_request: str, reply: Completion) -> Completion:
+        """Проверяет ответ агента на нарушение инвариантов.
+
+        Работает, только если инварианты заданы и ``invariants.enforce`` включён.
+        Коротким запросом к LLM агент выясняет, не нарушает ли предложенное
+        решение инвариант. Если нарушает — возвращает заменённый ответ с отказом
+        и объяснением (см. Invariants.refusal_message), иначе — исходный ответ.
+        """
+        self._last_guard_violation = False
+        invariants = self._invariants
+        if invariants is None or not invariants.enforce or not invariants:
+            return reply
+        check_messages = invariants.guard_check_messages(user_request, reply.content)
+        if not check_messages:
+            return reply
+        try:
+            verdict_text = self._client.complete(check_messages).content
+        except Exception:
+            # Проверка не критична: если она не удалась, ответ оставляем как есть.
+            return reply
+        verdict = parse_guard_verdict(verdict_text)
+        if not verdict.violated:
+            return reply
+        self._last_guard_violation = True
+        return Completion(
+            content=invariants.refusal_message(verdict),
+            model=reply.model,
+            prompt_tokens=reply.prompt_tokens,
+            completion_tokens=estimate_tokens(invariants.refusal_message(verdict)),
+        )
 
     def _maybe_auto_advance_task(self, user_request: str, assistant_reply: str) -> None:
         """Автоматически продвигает задачу, если этап выполнен.
