@@ -51,6 +51,16 @@ STAGE_LABELS = {
     "done": "Готово",
 }
 
+# Ожидаемое действие по умолчанию для каждого этапа. Подставляется
+# автоматически при переходе на этап (если не задано своё через /task_expected).
+STAGE_DEFAULT_ACTIONS = {
+    "planning": "уточнить цель и составить план",
+    "planning_review": "согласовать план с пользователем",
+    "execution": "выполнить задачу и оформить результат",
+    "validation": "проверить результат на соответствие требованиям",
+    "done": "задача завершена",
+}
+
 # Этап по умолчанию для новой задачи.
 DEFAULT_STAGE = "planning"
 
@@ -130,7 +140,7 @@ class TaskState:
         return cls(
             stage=DEFAULT_STAGE,
             step=0,
-            expected_action=expected_action or "уточнить цель и составить план",
+            expected_action=expected_action or STAGE_DEFAULT_ACTIONS[DEFAULT_STAGE],
             description=description,
         )
 
@@ -159,6 +169,18 @@ class TaskState:
             "completed": self.completed,
             "log": list(self.log),
         }
+
+    def _apply_stage_default_action(self) -> None:
+        """Подставляет ожидаемое действие по умолчанию для текущего этапа.
+
+        Вызывается при переходе на новый этап, поэтому каждый этап получает
+        своё ожидание (planning — план, execution — выполнить, validation —
+        проверить). Явное ``/task_expected`` задаёт действие на текущем этапе
+        и действует до следующего перехода.
+        """
+        default = STAGE_DEFAULT_ACTIONS.get(self.stage)
+        if default:
+            self.expected_action = default
 
     def _record(self, event: str) -> None:
         self.log.append(event)
@@ -196,6 +218,7 @@ class TaskState:
         self.stage = next_stages[0]
         self.completed = False
         self.step += 1
+        self._apply_stage_default_action()
         self._record(f"{previous} -> {self.stage}")
         return self.stage
 
@@ -222,6 +245,7 @@ class TaskState:
             self.stage = target
             self.completed = False
             self.step += 1
+            self._apply_stage_default_action()
             self._record(f"{previous} -> {self.stage}")
         return self.stage
 
