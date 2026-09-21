@@ -11,6 +11,7 @@ from .context import strategy_from_config
 from .conversation import SessionStore
 from .llm_client import LLMClient
 from .memory import LONG_TERM_KINDS, MemoryLayers
+from .personalization import PREFERENCE_GROUPS, Personalization, UserProfile
 from .tokens import ContextOverflowError
 
 
@@ -34,7 +35,18 @@ def build_agent(conversation) -> Agent:
         compression=_compression_from_config(config),
         context_strategy=strategy_from_config(config),
         memory=_memory_from_config(conversation),
+        personalization=_personalization_from_config(),
     )
+
+
+def _personalization_from_config() -> Personalization | None:
+    """Создаёт персонализацию из секции ``personalization`` (None — выключена)."""
+    config = load_config()
+    section = config.get("personalization", {}) or {}
+    if not section.get("enabled", False):
+        return None
+    path = section.get("profiles_path")
+    return Personalization(path=path or None)
 
 
 def _memory_from_config(conversation) -> MemoryLayers | None:
@@ -222,6 +234,114 @@ def _handle_memory_command(agent: Agent, command: str) -> bool:
     return False
 
 
+def _handle_profile_command(agent: Agent, command: str) -> bool:
+    """Обрабатывает команды персонализации. Возвращает True, если команда взята."""
+    personalization = agent.personalization
+    if personalization is None:
+        print("Персонализация: выключена (см. секцию personalization в config.json).\n")
+        return True
+
+    parts = command.strip().split(maxsplit=2)
+    verb = parts[0].lower()
+    rest = command.strip()[len(parts[0]):].strip()
+
+    if verb in ("profile", "профиль"):
+        active = personalization.active_name
+        print(f"Персонализация: {personalization.path.name}.")
+        print(personalization.summarize())
+        if active:
+            profile = personalization.active()
+            if profile is not None:
+                print(f"\nАктивный профиль: {active}")
+                prompt = profile.system_message()
+                if prompt:
+                    print(prompt)
+                else:
+                    print("  (профиль пуст — ничего не подмешивается)")
+        print()
+        return True
+
+    if verb in ("profile_new", "новый_профиль"):
+        if not rest:
+            print("Укажите имя профиля: profile_new <имя>\n")
+            return True
+        name = rest
+        if personalization.has(name):
+            print(f"Профиль {name} уже существует.\n")
+            return True
+        profile = UserProfile(name=name)
+        personalization.save(name, profile)
+        personalization.set_active(name)
+        print(f"Создан и активирован профиль: {name} (пустой). "
+              f"Заполните его через /preference.\n")
+        return True
+
+    if verb in ("profile_use", "использовать", "активный"):
+        if not rest:
+            print("Укажите имя профиля: profile_use <имя>\n")
+            return True
+        if personalization.set_active(rest):
+            print(f"Активный профиль: {rest}\n")
+        else:
+            print(f"Профиль {rest} не найден.\n")
+        return True
+
+    if verb in ("profile_del", "удалить_профиль"):
+        if not rest:
+            print("Укажите имя профиля: profile_del <имя>\n")
+            return True
+        if personalization.delete(rest):
+            print(f"Профиль {rest} удалён.\n")
+        else:
+            print(f"Профиль {rest} не найден.\n")
+        return True
+
+    if verb in ("profile_off", "отключить"):
+        personalization.set_active(None)
+        print("Персонализация отключена (активного профиля нет).\n")
+        return True
+
+    if verb in ("preference", "предпочтение"):
+        # preference <style|format|constraints> <ключ> = <значение>
+        if personalization.active_name is None:
+            print("Нет активного профиля. Активируйте через /profile_use <имя>.\n")
+            return True
+        profile = personalization.active()
+        group, _, right = rest.partition(" ")
+        key, _, value = right.partition("=")
+        group, key, value = group.strip().lower(), key.strip(), value.strip()
+        if group not in PREFERENCE_GROUPS:
+            print(f"Неизвестная группа: {group!r}. "
+                  f"Допустимо: {', '.join(PREFERENCE_GROUPS)}.\n")
+            return True
+        if not key or not value:
+            print("Использование: preference <style|format|constraints> <ключ> = <значение>\n")
+            return True
+        profile.set_preference(group, key, value)
+        personalization.save(personalization.active_name, profile)
+        print(f"{PREFERENCE_GROUPS} → {key} = {value}\n")
+        return True
+
+    if verb in ("preference_del", "убрать_предпочтение"):
+        group, _, key = rest.partition(" ")
+        group, key = group.strip().lower(), key.strip()
+        if personalization.active_name is None:
+            print("Нет активного профиля.\n")
+            return True
+        if group not in PREFERENCE_GROUPS or not key:
+            print("Использование: preference_del <style|format|constraints> <ключ>\n")
+            return True
+        profile = personalization.active()
+        if profile.remove_preference(group, key):
+            personalization.save(personalization.active_name, profile)
+            print(f"Убрано: {group} → {key}\n")
+        else:
+            print(f"Предпочтение {key!r} ({group}) не найдено.\n")
+        return True
+
+    return False
+
+
 def print_context_status(agent: Agent) -> None:
     """Печатает активную стратегию управления контекстом и состояние веток."""
     strategy = agent.context_strategy
@@ -310,6 +430,16 @@ def print_help() -> None:
                          — удалить запись долговременной памяти (profile/decision/knowledge)
   /clearworking          — очистить рабочую память (смена задачи)
 
+Персонализация (профиль пользователя):
+  /profile               — показать профили и активный профиль
+  /profile_new <имя>     — создать и активировать новый профиль
+  /profile_use <имя>     — сделать профиль активным
+  /profile_del <имя>     — удалить профиль
+  /profile_off           — отключить персонализацию
+  /preference <группа> <ключ> = <значение>
+                         — задать предпочтение (группа: style | format | constraints)
+  /preference_del <группа> <ключ> — убрать предпочтение
+
 Любая строка без слэша уходит модели как сообщение пользователя.
 """)
 
@@ -342,6 +472,12 @@ def _dispatch_command(agent: Agent, line: str) -> bool:
     if verb in ("memory", "память", "remember", "запомни", "forget", "забыть",
                 "clearworking", "clear_working", "новая_задача", "сменить_задачу"):
         return _handle_memory_command(agent, cmd)
+    if verb in ("profile", "профиль", "profile_new", "новый_профиль",
+                "profile_use", "использовать", "активный", "profile_del",
+                "удалить_профиль", "profile_off", "отключить",
+                "preference", "предпочтение", "preference_del",
+                "убрать_предпочтение"):
+        return _handle_profile_command(agent, cmd)
     print(f"Неизвестная команда: /{verb}. Введите /help для списка команд.\n")
     return True
 
@@ -374,6 +510,13 @@ def main() -> None:
         print("Модель памяти: включена (краткосрочная / рабочая / долговременная).")
         print("  команды: /memory, /remember <слой> <ключ> = <значение>, "
               "/forget <категория> <ключ>, /clearworking")
+    if agent.personalization is not None:
+        active = agent.personalization.active_name
+        if active:
+            print(f"Персонализация: включена, активный профиль: {active}.")
+        else:
+            print("Персонализация: включена, активного профиля нет.")
+        print("  команды: /profile, /profile_new, /profile_use, /preference")
     print("Введите /help для списка команд.\n")
 
     while True:

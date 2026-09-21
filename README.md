@@ -1,3 +1,61 @@
+# Day 12: Personalization of the assistant — user profile over the memory model
+
+`personalization_scenarios.py` adds a **user profile** layer on top of the memory
+model (see Day 11). Instead of just remembering facts, the agent now holds a
+profile — who the user is and their preferences — and **automatically** injects
+it into every request. The user doesn't have to repeat "answer briefly", "no
+water", "use lists": these rules live in the profile and go to the model on
+their own.
+
+A profile has three preference groups plus identity:
+
+- **Identity** — who the user is and their context (so the assistant speaks at
+  the right level).
+- **Style** (`style`) — how to answer: tone, formality, brevity, emoji.
+- **Format** (`format`) — how to structure the answer: bullet lists, headings,
+  tables, markdown, code, step-by-step.
+- **Constraints** (`constraints`) — what to avoid: fluff, jargon, extra details,
+  answer length.
+
+Profiles are stored in a separate `profiles.json` and survive sessions. The
+active profile's system message is **prepended to every request** and counted in
+`context_tokens`, so the assistant adapts automatically without any extra
+instructions.
+
+The scenario runs the **same question** through three different profiles —
+*Инженер* (terse, technical, with code), *Менеджер* (structured, with a
+takeaway and a next step), *Новичок* (simple, step-by-step, no jargon) — and
+shows each got its own profile block and a different, adapted answer.
+
+## What was added
+
+- `agent/personalization.py` — `UserProfile` (identity + style/format/constraints
+  preferences), `Personalization` (manages named profiles + active profile,
+  persisted to `profiles.json`), `system_message()` / `summarize()`.
+- `agent/agent.py` — accepts `personalization`; the active profile's system
+  message is inserted first into the request and counted in `context_tokens`.
+- `agent/cli.py` — reads the `personalization` section and adds commands:
+  `/profile` (show profiles), `/profile_new <имя>`, `/profile_use <имя>`,
+  `/profile_del <имя>`, `/profile_off`, `/preference <группа> <ключ> = <значение>`,
+  `/preference_del <группа> <ключ>`.
+- `agent/personalization_scenarios.py` — live or demo (`--demo`) scenario that
+  compares one question across several profiles.
+
+Config keys (in the `personalization` section): `enabled`, `profiles_path`.
+
+## Run
+
+```bash
+cd ai_advent && python3 -m agent.personalization_scenarios --demo   # fixed scenario, offline
+cd ai_advent && python3 -m agent.personalization_scenarios          # live input, offline
+cd ai_advent && python3 -m agent.personalization_scenarios --online # real API requests
+```
+
+Commands (not sent to the model): `profile`, `profile_new <имя>`,
+`profile_use <имя>`, `profile_del <имя>`, `profile_off`,
+`preference <style|format|constraints> <ключ> = <значение>`,
+`preference_del <группа> <ключ>`, `context`, `exit`.
+
 # Day 11: Agent memory model — three separate memory layers
 
 `memory_scenarios.py` demonstrates an agent with an explicit memory model that

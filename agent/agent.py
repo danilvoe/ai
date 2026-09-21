@@ -10,6 +10,7 @@ from .context import ContextStrategy
 from .conversation import Conversation, SessionStore
 from .llm_client import Completion, LLMClient
 from .memory import MemoryLayers
+from .personalization import Personalization
 from .tokens import (
     ContextOverflowError,
     UsageReport,
@@ -34,6 +35,10 @@ class Agent:
     памяти из трёх слоёв: краткосрочная (текущий диалог), рабочая (данные
     текущей задачи) и долговременная (профиль, решения, знания). Слои хранятся
     отдельно, а их содержимое добавляется к запросу в виде system-сообщений.
+
+    Если задан ``personalization`` (см. agent/personalization.py), активный
+    профиль пользователя автоматически подмешивается к каждому запросу:
+    его system-сообщение вставляется первым и учитывается в контексте.
     """
 
     def __init__(
@@ -44,6 +49,7 @@ class Agent:
         compression: CompressionConfig | None = None,
         context_strategy: ContextStrategy | None = None,
         memory: MemoryLayers | None = None,
+        personalization: Personalization | None = None,
     ) -> None:
         self._client = client
         self._conversation = conversation
@@ -51,6 +57,7 @@ class Agent:
         self._compression = compression or CompressionConfig(keep_recent=0)
         self._context_strategy = context_strategy
         self._memory = memory
+        self._personalization = personalization
         self._last_prompt_tokens: int | None = None
         self._usage = UsageReport(
             input_price=client.config.get("input_cost_per_million"),
@@ -87,6 +94,25 @@ class Agent:
         return self._memory
 
     @property
+    def personalization(self) -> Personalization | None:
+        """Персонализация агента: активный профиль пользователя (None — выключена)."""
+        return self._personalization
+
+    @property
+    def profile_prompt(self) -> str:
+        """System-сообщение активного профиля (пусто, если профиля нет/пуст)."""
+        if self._personalization is None:
+            return ""
+        return self._personalization.system_message()
+
+    def _profile_messages(self) -> list[dict]:
+        """Список system-сообщений активного профиля (пусто, если профиль пуст)."""
+        prompt = self.profile_prompt
+        if not prompt:
+            return []
+        return [{"role": "system", "content": prompt}]
+
+    @property
     def context_messages(self) -> list[dict]:
         """Сообщения, которые будут отправлены в модель.
 
@@ -94,14 +120,16 @@ class Agent:
         сжатием истории (summary + свежее окно), см. agent/compression.py.
         Если задана модель памяти, к полученным сообщениям добавляется блок
         system-сообщений из всех слоёв памяти (см. agent/memory.py).
+        Если задана персонализация, её профиль вставляется первым — он идёт
+        раньше памяти, так как задаёт общий стиль и ограничения.
         """
         if self._context_strategy is not None:
             messages = self._context_strategy.build_messages(self._conversation)
         else:
             messages = build_context_messages(self._conversation)
         if self._memory is not None:
-            return self._memory.build_memory_context() + messages
-        return messages
+            messages = self._memory.build_memory_context() + messages
+        return self._profile_messages() + messages
 
     @property
     def context_tokens(self) -> int:
@@ -121,6 +149,7 @@ class Agent:
             tokens += estimate_messages_tokens(self._conversation.messages)
         if self._memory is not None:
             tokens += estimate_messages_tokens(self._memory.build_memory_context())
+        tokens += estimate_messages_tokens(self._profile_messages())
         return tokens
 
     def ask(self, user_request: str) -> Completion:

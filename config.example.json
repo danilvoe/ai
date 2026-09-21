@@ -18,6 +18,10 @@
     "enabled": true,
     "profile_path": "history/profile.json"
   },
+  "personalization": {
+    "enabled": true,
+    "profiles_path": "history/profiles.json"
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [
