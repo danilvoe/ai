@@ -12,6 +12,7 @@ from .context import strategy_from_config
 from .conversation import SessionStore
 from .invariants import INVARIANT_CATEGORIES, Invariants
 from .llm_client import LLMClient
+from .mcp_tools import McpToolRuntime, runtime_from_config
 from .memory import LONG_TERM_KINDS, MemoryLayers
 from .personalization import PREFERENCE_GROUPS, Personalization, UserProfile
 from .task_state import TaskStateMachine
@@ -41,7 +42,16 @@ def build_agent(conversation) -> Agent:
         personalization=_personalization_from_config(),
         task=_task_from_config(conversation),
         invariants=_invariants_from_config(),
+        tools=_tools_from_config(),
     )
+
+
+def _tools_from_config() -> McpToolRuntime | None:
+    """Создаёт рантайм MCP-инструментов из секции ``tools`` (None — выключено)."""
+    try:
+        return runtime_from_config(load_config())
+    except Exception:  # noqa: BLE001 — инструменты не должны ломать запуск
+        return None
 
 
 def _invariants_from_config() -> Invariants | None:
@@ -670,6 +680,56 @@ def _handle_branch_command(agent: Agent, command: str) -> None:
         return
 
 
+def _handle_tool_command(agent: Agent, command: str) -> bool:
+    """Обрабатывает команды MCP-инструментов. Возвращает True, если команда взята."""
+    runtime = agent.tools
+    if runtime is None:
+        print("MCP-инструменты: выключены (см. секцию tools в config.json).\n")
+        return True
+
+    parts = command.strip().split(maxsplit=2)
+    verb = parts[0].lower()
+    rest = command.strip()[len(parts[0]):].strip()
+
+    if verb in ("tools", "инструменты", "mcp"):
+        try:
+            print(runtime.summarize())
+        except Exception as exc:  # noqa: BLE001 — наглядная ошибка подключения
+            print(f"Не удалось получить список MCP-инструментов: {exc}")
+        print()
+        return True
+
+    if verb in ("tool", "вызов", "tool_call"):
+        name, _, raw = rest.partition(" ")
+        name = name.strip()
+        if not name:
+            print("Использование: tool <имя> [<json-аргументы>]\n")
+            return True
+        try:
+            arguments = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            print('Аргументы должны быть JSON-объектом: tool get_public_projects {"query": "docs"}\n')
+            return True
+        if not isinstance(arguments, dict):
+            print("Аргументы должны быть JSON-объектом.\n")
+            return True
+        try:
+            result = runtime.call(name, arguments)
+        except Exception as exc:  # noqa: BLE001 — наглядная ошибка вызова
+            print(f"Ошибка вызова MCP-инструмента: {exc}\n")
+            return True
+        status = "ошибка" if result.is_error else "ok"
+        print(f"MCP-инструмент {result.name} → {status}:")
+        if result.structured is not None:
+            print(json.dumps(result.structured, ensure_ascii=False, indent=2))
+        else:
+            print(result.content)
+        print()
+        return True
+
+    return False
+
+
 def print_help() -> None:
     """Печатает список доступных команд агента."""
     print("""Доступные команды (вводятся со слэшем):
@@ -728,6 +788,11 @@ def print_help() -> None:
   /invariant_clear       — удалить все инварианты
   /invariant_enforce     — вкл/выкл проверку ответа на нарушение инвариантов
 
+MCP-инструменты:
+  /tools                 — показать инструменты MCP-сервера и их параметры
+  /tool <имя> [<json>]   — вызвать MCP-инструмент напрямую и показать результат
+                           (например: /tool get_public_projects {"query": "docs"})
+
 Любая строка без слэша уходит модели как сообщение пользователя.
 """)
 
@@ -782,6 +847,8 @@ def _dispatch_command(agent: Agent, line: str) -> bool:
                 "invariant_clear", "очистить_инварианты",
                 "invariant_enforce", "контроль"):
         return _handle_invariant_command(agent, cmd)
+    if verb in ("tools", "инструменты", "mcp", "tool", "вызов", "tool_call"):
+        return _handle_tool_command(agent, cmd)
     print(f"Неизвестная команда: /{verb}. Введите /help для списка команд.\n")
     return True
 
@@ -831,6 +898,9 @@ def main() -> None:
         print("  команды: /invariant, /invariant_add, /invariant_del, "
               "/invariant_enforce")
         print_invariant_status(agent)
+    if agent.tools is not None:
+        print("MCP-инструменты: подключены (агент вызывает их сам под задачу).")
+        print("  команды: /tools, /tool <имя> [<json-аргументы>]")
     print("Введите /help для списка команд.\n")
 
     while True:
@@ -859,6 +929,14 @@ def main() -> None:
             continue
 
         print(f"\nАгент: {reply.content}\n")
+        if agent.tools is not None and agent.last_tool_call is not None:
+            call = agent.last_tool_call
+            result = agent.last_tool_result
+            status = "ошибка" if (result and result.is_error) else "результат получен"
+            print(
+                f"(MCP-вызов: {call.name} {json.dumps(call.arguments, ensure_ascii=False)} "
+                f"— {status})\n"
+            )
         if agent.invariants is not None and agent.last_guard_violation:
             print("(ассистент отказался: предложенное решение нарушало инвариант)\n")
         if agent.task is not None and agent.last_transition_violation:

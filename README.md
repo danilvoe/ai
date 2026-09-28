@@ -1,3 +1,67 @@
+# Day 17: The first MCP tool — public GitFlic projects
+
+`mcp/gitflic_server.py` is a **own MCP server** built on the official `mcp` SDK
+(`FastMCP`) around the public GitFlic API. It registers one tool,
+`get_public_projects`, which returns the list of public projects via
+`GET https://api.gitflic.ru/project`.
+
+The server does exactly what the task asks:
+
+1. **Tool registration** — the `@mcp.tool()` decorator registers
+   `get_public_projects`; clients discover it via `tools/list` (visible in the
+   server info with name, description and schema).
+2. **Input parameters** — the tool declares `query: str = ""`, `page: int = 0`,
+   `size: int = 10`; FastMCP derives the JSON input schema from the types and
+   the docstring `Args`, so the client sees each parameter and its meaning.
+3. **Result** — the tool returns a result: `projects` (id, title, alias,
+   description, language, owner, clone URLs, topics), `page`, `count` and
+   `total`.
+
+`agent/mcp_tools.py` is the **MCP runtime** that connects the server to the
+agent (stdio transport: the client launches the server as a subprocess). The
+`Agent` calls a tool in two steps (`Agent._maybe_call_tool`): a short LLM request
+picks the tool and its arguments (`plan_messages` + `parse_plan`), then the call
+goes through MCP (`call`), and the result is injected into the context as a
+system message so the main model answers from real data.
+
+## Authorization
+
+The GitFlic API requires an access token (scope `PROJECT_READ`) in the header
+`Authorization: token <token>`. Put it in the `tools.gitflic_token` config key
+or in the `GITFLIC_TOKEN` environment variable. The API base can be overridden
+with `gitflic_api_url` / `GITFLIC_API_URL` (default `https://api.gitflic.ru`).
+
+## What was added
+
+- `mcp/gitflic_server.py` — the MCP server: `get_public_projects` tool,
+  request to `/project`, result normalization, and a `--check` mode that runs
+  the tool directly and prints JSON.
+- `agent/mcp_tools.py` — `McpToolRuntime` (stdio client: `list_tools`, `call`,
+  `summarize`, `plan_messages`, `parse_plan`, `result_message`), `ToolSpec`,
+  `ToolCall`, `ToolResult`, and `runtime_from_config`.
+- `agent/agent.py` — accepts `tools`; `_maybe_call_tool()` selects and calls the
+  MCP tool and injects the result into the request. `last_tool_call` /
+  `last_tool_result` expose what happened.
+- `agent/cli.py` — reads the `tools` section, shows a notice on start, and adds
+  commands `/tools` (list tools + parameters) and `/tool <name> [<json>]`
+  (call a tool directly and print the result).
+- `agent/tool_scenarios.py` — scenario: tool registration/discovery, input
+  parameter schema, a direct call with the result, and an agent-level call
+  (`--agent`) where the agent chooses the tool and uses the result.
+
+Config keys (in the `tools` section): `enabled`, `command`, `args`,
+`gitflic_token`, `gitflic_api_url`, `timeout`.
+
+## Run
+
+```bash
+cd ai_advent
+GITFLIC_TOKEN=<token> python3 mcp/gitflic_server.py --check    # direct tool call
+GITFLIC_TOKEN=<token> python3 -m agent.tool_scenarios          # discovery + call
+GITFLIC_TOKEN=<token> python3 -m agent.tool_scenarios --agent "покажи публичные проекты gitflic"
+python3 -m agent.cli                                           # /tools, /tool get_public_projects {"size": 5}
+```
+
 # Day 16: MCP connection and tool discovery
 
 `agent/mcp_client.py` is a **minimal MCP client** built on the official

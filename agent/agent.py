@@ -10,6 +10,7 @@ from .context import ContextStrategy
 from .conversation import Conversation, SessionStore
 from .invariants import Invariants, parse_guard_verdict
 from .llm_client import Completion, LLMClient
+from .mcp_tools import McpToolRuntime, ToolCall, ToolResult
 from .memory import MemoryLayers
 from .personalization import Personalization
 from .task_state import (
@@ -59,6 +60,12 @@ class Agent:
     рассуждении. Если ``invariants.enforce`` включён, агент после ответа
     прогоняет короткую проверку: не нарушает ли предложенное решение
     инвариант. Если нарушает — ответ заменяется отказом с объяснением.
+
+    Если задан ``tools`` (см. agent/mcp_tools.py), агент может вызывать
+    инструменты MCP-сервера. Перед основным ответом он коротким запросом к
+    LLM выбирает инструмент и аргументы под запрос пользователя, выполняет
+    вызов через MCP и подмешивает результат в контекст, поэтому основная
+    модель отвечает по реальным данным (например, публичные проекты GitFlic).
     """
 
     def __init__(
@@ -72,6 +79,7 @@ class Agent:
         personalization: Personalization | None = None,
         task: TaskStateMachine | None = None,
         invariants: Invariants | None = None,
+        tools: McpToolRuntime | None = None,
     ) -> None:
         self._client = client
         self._conversation = conversation
@@ -82,9 +90,12 @@ class Agent:
         self._personalization = personalization
         self._task = task
         self._invariants = invariants
+        self._tools = tools
         self._last_prompt_tokens: int | None = None
         self._last_guard_violation: bool = False
         self._last_transition_violation: bool = False
+        self._last_tool_call: ToolCall | None = None
+        self._last_tool_result: ToolResult | None = None
         self._usage = UsageReport(
             input_price=client.config.get("input_cost_per_million"),
             output_price=client.config.get("output_cost_per_million"),
@@ -143,6 +154,21 @@ class Agent:
     def last_transition_violation(self) -> bool:
         """Перепрыгивал ли последний ответ агента этап задачи (True — был отказ)."""
         return self._last_transition_violation
+
+    @property
+    def tools(self) -> McpToolRuntime | None:
+        """Рантайм MCP-инструментов (None — инструменты не подключены)."""
+        return self._tools
+
+    @property
+    def last_tool_call(self) -> ToolCall | None:
+        """Какой MCP-инструмент вызвал агент на последнем ходу (None — не вызывал)."""
+        return self._last_tool_call
+
+    @property
+    def last_tool_result(self) -> ToolResult | None:
+        """Результат последнего вызова MCP-инструмента (None — вызова не было)."""
+        return self._last_tool_result
 
     def save_task(self) -> None:
         """Сохраняет текущее состояние задачи в сессию (чтобы оно пережило перезапуск)."""
@@ -250,6 +276,12 @@ class Agent:
         if self._context_strategy is not None:
             self._context_strategy.on_user_message(self._conversation, user_request)
         context_messages = self.context_messages
+
+        # MCP-инструменты: если запрос требует данных извне, агент вызывает
+        # инструмент и подмешивает его результат в контекст (Day 17).
+        tool_messages = self._maybe_call_tool(user_request)
+        if tool_messages:
+            context_messages = context_messages + tool_messages
 
         # Контролируемые переходы: не пытается ли пользователь перепрыгнуть этап.
         guard_reason = self._stage_guard_reason(user_request)
@@ -374,6 +406,46 @@ class Agent:
             prompt_tokens=reply.prompt_tokens,
             completion_tokens=estimate_tokens(invariants.refusal_message(verdict)),
         )
+
+    def _maybe_call_tool(self, user_request: str) -> list[dict]:
+        """Выбирает MCP-инструмент под запрос, вызывает его и возвращает результат.
+
+        Работает, только если подключён рантайм инструментов (``tools``).
+        Коротким запросом к LLM агент выбирает инструмент и аргументы
+        (``plan_messages`` + ``parse_plan``), затем выполняет вызов через MCP
+        и возвращает system-сообщение с результатом. Это сообщение
+        добавляется к контексту, поэтому основная модель строит ответ по
+        реальным данным инструмента. Если инструмент не нужен — пустой список.
+        """
+        self._last_tool_call = None
+        self._last_tool_result = None
+        runtime = self._tools
+        if runtime is None:
+            return []
+        try:
+            plan_messages = runtime.plan_messages(user_request)
+            if not plan_messages:
+                return []
+            plan_text = self._client.complete(plan_messages, temperature=0.0).content
+            call = runtime.parse_plan(plan_text)
+            if call is None:
+                return []
+        except Exception:
+            # Инструменты не критичны: при сбое выбора ответ даёт основная модель.
+            return []
+
+        self._last_tool_call = call
+        try:
+            result = runtime.call(call.name, call.arguments)
+        except Exception as exc:  # noqa: BLE001 — показываем ошибку инструмента
+            result = ToolResult(
+                name=call.name,
+                arguments=call.arguments,
+                content=f"Ошибка вызова MCP-инструмента: {exc}",
+                is_error=True,
+            )
+        self._last_tool_result = result
+        return [runtime.result_message(result)]
 
     def _maybe_auto_advance_task(self, user_request: str, assistant_reply: str) -> None:
         """Автоматически продвигает задачу, если этап выполнен.

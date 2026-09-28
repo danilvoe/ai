@@ -37,6 +37,14 @@
     "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     "timeout": 30
   },
+  "tools": {
+    "enabled": true,
+    "command": "python3",
+    "args": ["mcp/gitflic_server.py"],
+    "gitflic_token": "your-gitflic-access-token",
+    "gitflic_api_url": "https://api.gitflic.ru",
+    "timeout": 60
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [
