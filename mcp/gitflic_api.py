@@ -13,12 +13,15 @@
 
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 DEFAULT_API_URL = "https://api.gitflic.ru"
 REQUEST_TIMEOUT = 30.0
+TIMEOUT_ENV = "GITFLIC_TIMEOUT"
+RETRIES_ENV = "GITFLIC_RETRIES"
 
 
 def api_url() -> str:
@@ -31,8 +34,28 @@ def token() -> str:
     return os.environ.get("GITFLIC_TOKEN", "").strip()
 
 
+def request_timeout() -> float:
+    """Таймаут одного HTTP-запроса к GitFlic (сек), с учётом ``GITFLIC_TIMEOUT``."""
+    try:
+        return max(1.0, float(os.environ.get(TIMEOUT_ENV, REQUEST_TIMEOUT)))
+    except ValueError:
+        return REQUEST_TIMEOUT
+
+
+def request_retries() -> int:
+    """Сколько раз повторять запрос при таймауте/сетевой ошибке (``GITFLIC_RETRIES``)."""
+    try:
+        return max(0, int(os.environ.get(RETRIES_ENV, "1")))
+    except ValueError:
+        return 1
+
+
 def request_json(path: str, params: dict | None = None) -> dict:
-    """Выполняет GET-запрос к API GitFlic и возвращает разобранный JSON."""
+    """Выполняет GET-запрос к API GitFlic и возвращает разобранный JSON.
+
+    При таймауте чтения или сетевом сбое запрос повторяется ``GITFLIC_RETRIES``
+    раз (по умолчанию 1). HTTP-ошибки (4xx/5xx) не повторяются.
+    """
     url = api_url() + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -44,8 +67,21 @@ def request_json(path: str, params: dict | None = None) -> dict:
     if access_token:
         headers["Authorization"] = f"token {access_token}"
     request = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-        return json.loads(response.read().decode("utf-8"))
+
+    attempt = 0
+    while True:
+        try:
+            with urllib.request.urlopen(
+                request, timeout=request_timeout()
+            ) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt >= request_retries():
+                raise
+            attempt += 1
+            time.sleep(min(1.5 * attempt, 4.0))
 
 
 def normalize_project(raw: dict) -> dict:

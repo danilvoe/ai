@@ -38,7 +38,22 @@ DEFAULT_JOBS = PROJECT_ROOT / "history" / "gitflic_jobs.json"
 DEFAULT_PAGE_SIZE = 100
 # По умолчанию обходим несколько страниц — этого достаточно для выборки, а
 # точное число публичных проектов берём из пагинации API на первой странице.
+# Сколько именно страниц обходить, можно переопределить переменной окружения
+# GITFLIC_MAX_PAGES (каждая страница — отдельный HTTP-запрос ~несколько секунд).
 DEFAULT_MAX_PAGES = 5
+MAX_PAGES_ENV = "GITFLIC_MAX_PAGES"
+
+
+def default_max_pages() -> int:
+    """Сколько страниц обходить по умолчанию (с учётом ``GITFLIC_MAX_PAGES``)."""
+    raw = os.environ.get(MAX_PAGES_ENV)
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return DEFAULT_MAX_PAGES
+
 
 
 def now_iso() -> str:
@@ -204,12 +219,14 @@ class ProjectCounter:
         fetch: Callable[..., dict] = fetch_public_projects,
         store: CountStore | None = None,
         page_size: int = DEFAULT_PAGE_SIZE,
-        max_pages: int = DEFAULT_MAX_PAGES,
+        max_pages: int | None = None,
     ) -> None:
         self._fetch = fetch
         self.store = store or CountStore()
         self.page_size = max(1, min(int(page_size), 100))
-        self.max_pages = max(1, int(max_pages))
+        self.max_pages = (
+            max(1, int(max_pages)) if max_pages is not None else default_max_pages()
+        )
 
     def count_now(
         self, query: str = "", job_id: str | None = None, trigger: str = "manual"

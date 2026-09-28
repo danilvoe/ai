@@ -2,6 +2,8 @@
   "base_url": "https://openai.bothub.chat/v1",
   "api_key": "your-api-key",
   "temperature": 0.7,
+  "timeout": 120,
+  "max_retries": 2,
   "max_context_tokens": 65536,
   "compression": {
     "keep_recent": 10,
@@ -62,7 +64,8 @@
         "args": ["mcp/gitflic_server.py"],
         "env": {
           "GITFLIC_TOKEN": "your-gitflic-access-token",
-          "GITFLIC_API_URL": "https://api.gitflic.ru"
+          "GITFLIC_API_URL": "https://api.gitflic.ru",
+          "GITFLIC_MAX_PAGES": "2"
         }
       },
       {
