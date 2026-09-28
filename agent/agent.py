@@ -1,5 +1,7 @@
 """Агент — отдельная сущность, принимающая запрос и вызывающая LLM."""
 
+import json
+
 from .compression import (
     CompressionConfig,
     build_context_messages,
@@ -66,6 +68,13 @@ class Agent:
     LLM выбирает инструмент и аргументы под запрос пользователя, выполняет
     вызов через MCP и подмешивает результат в контекст, поэтому основная
     модель отвечает по реальным данным (например, публичные проекты GitFlic).
+
+    Вместо одного сервера можно передать оркестратор нескольких MCP-серверов
+    (``McpOrchestrator``, см. agent/orchestrator.py). Тогда агент ведёт
+    **длинный флоу**: на каждом шаге LLM выбирает следующий инструмент любого
+    из серверов, вызов маршрутизируется на нужный сервер, а его результат
+    возвращается в контекст следующего шага. Число шагов ограничено
+    ``max_tool_steps``. Все вызовы доступны через ``last_tool_calls``.
     """
 
     def __init__(
@@ -80,6 +89,7 @@ class Agent:
         task: TaskStateMachine | None = None,
         invariants: Invariants | None = None,
         tools: McpToolRuntime | None = None,
+        max_tool_steps: int = 6,
     ) -> None:
         self._client = client
         self._conversation = conversation
@@ -91,11 +101,14 @@ class Agent:
         self._task = task
         self._invariants = invariants
         self._tools = tools
+        self._max_tool_steps = max(1, int(max_tool_steps))
         self._last_prompt_tokens: int | None = None
         self._last_guard_violation: bool = False
         self._last_transition_violation: bool = False
         self._last_tool_call: ToolCall | None = None
         self._last_tool_result: ToolResult | None = None
+        self._last_tool_calls: list[ToolCall] = []
+        self._last_tool_results: list[ToolResult] = []
         self._usage = UsageReport(
             input_price=client.config.get("input_cost_per_million"),
             output_price=client.config.get("output_cost_per_million"),
@@ -169,6 +182,21 @@ class Agent:
     def last_tool_result(self) -> ToolResult | None:
         """Результат последнего вызова MCP-инструмента (None — вызова не было)."""
         return self._last_tool_result
+
+    @property
+    def max_tool_steps(self) -> int:
+        """Максимум шагов длинного флоу инструментов за один ход."""
+        return self._max_tool_steps
+
+    @property
+    def last_tool_calls(self) -> list[ToolCall]:
+        """Все вызовы MCP-инструментов за последний ход, в порядке выполнения."""
+        return list(self._last_tool_calls)
+
+    @property
+    def last_tool_results(self) -> list[ToolResult]:
+        """Результаты всех вызовов инструментов за последний ход, по порядку."""
+        return list(self._last_tool_results)
 
     def save_task(self) -> None:
         """Сохраняет текущее состояние задачи в сессию (чтобы оно пережило перезапуск)."""
@@ -408,44 +436,82 @@ class Agent:
         )
 
     def _maybe_call_tool(self, user_request: str) -> list[dict]:
-        """Выбирает MCP-инструмент под запрос, вызывает его и возвращает результат.
+        """Выбирает MCP-инструменты под запрос, вызывает их и возвращает результаты.
 
-        Работает, только если подключён рантайм инструментов (``tools``).
-        Коротким запросом к LLM агент выбирает инструмент и аргументы
-        (``plan_messages`` + ``parse_plan``), затем выполняет вызов через MCP
-        и возвращает system-сообщение с результатом. Это сообщение
-        добавляется к контексту, поэтому основная модель строит ответ по
-        реальным данным инструмента. Если инструмент не нужен — пустой список.
+        Работает, только если подключён рантайм инструментов (``tools``) —
+        один MCP-сервер (``McpToolRuntime``) или оркестратор нескольких серверов
+        (``McpOrchestrator``).
+
+        Это **длинный флоу**: на каждом шаге коротким запросом к LLM агент
+        выбирает следующий инструмент и аргументы (``plan_messages`` +
+        ``parse_plan``), зная каталог всех серверов и уже полученные результаты.
+        Вызов маршрутизируется (у оркестратора — на нужный сервер), результат
+        кладётся в контекст следующего шага. Цикл длится до ``max_tool_steps``
+        шагов, пока LLM не вернёт ``{"tool": null}``, пока не случится ошибка
+        или повтор вызова. Возвращает system-сообщения со всеми результатами.
         """
         self._last_tool_call = None
         self._last_tool_result = None
+        self._last_tool_calls = []
+        self._last_tool_results = []
         runtime = self._tools
         if runtime is None:
             return []
-        try:
-            plan_messages = runtime.plan_messages(user_request)
-            if not plan_messages:
-                return []
-            plan_text = self._client.complete(plan_messages, temperature=0.0).content
-            call = runtime.parse_plan(plan_text)
-            if call is None:
-                return []
-        except Exception:
-            # Инструменты не критичны: при сбое выбора ответ даёт основная модель.
-            return []
 
-        self._last_tool_call = call
-        try:
-            result = runtime.call(call.name, call.arguments)
-        except Exception as exc:  # noqa: BLE001 — показываем ошибку инструмента
-            result = ToolResult(
-                name=call.name,
-                arguments=call.arguments,
-                content=f"Ошибка вызова MCP-инструмента: {exc}",
-                is_error=True,
+        messages: list[dict] = []
+        results_log: list[dict] = []
+        seen: set[str] = set()
+
+        for _ in range(self._max_tool_steps):
+            try:
+                plan_messages = runtime.plan_messages(user_request, results_log)
+                if not plan_messages:
+                    break
+                plan_text = self._client.complete(
+                    plan_messages, temperature=0.0
+                ).content
+                call = runtime.parse_plan(plan_text)
+            except Exception:
+                # Инструменты не критичны: при сбое выбора ответ даёт модель.
+                break
+            if call is None:
+                break
+
+            key = f"{call.name}:{json.dumps(call.arguments, ensure_ascii=False, sort_keys=True)}"
+            if key in seen:
+                break
+            seen.add(key)
+
+            self._last_tool_call = call
+            try:
+                result = runtime.call(call.name, call.arguments)
+            except Exception as exc:  # noqa: BLE001 — показываем ошибку инструмента
+                result = ToolResult(
+                    name=call.name,
+                    arguments=call.arguments,
+                    content=f"Ошибка вызова MCP-инструмента: {exc}",
+                    is_error=True,
+                )
+            self._last_tool_result = result
+            self._last_tool_calls.append(call)
+            self._last_tool_results.append(result)
+            messages.append(runtime.result_message(result))
+
+            payload = result.structured if result.structured is not None else result.content
+            results_log.append(
+                {
+                    "step": len(self._last_tool_calls),
+                    "tool": call.name,
+                    "server": result.server,
+                    "arguments": call.arguments,
+                    "result": payload,
+                    "error": result.is_error,
+                }
             )
-        self._last_tool_result = result
-        return [runtime.result_message(result)]
+            if result.is_error:
+                break
+
+        return messages
 
     def _maybe_auto_advance_task(self, user_request: str, assistant_reply: str) -> None:
         """Автоматически продвигает задачу, если этап выполнен.

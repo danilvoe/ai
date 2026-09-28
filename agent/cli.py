@@ -14,6 +14,7 @@ from .invariants import INVARIANT_CATEGORIES, Invariants
 from .llm_client import LLMClient
 from .mcp_tools import McpToolRuntime, runtime_from_config
 from .memory import LONG_TERM_KINDS, MemoryLayers
+from .orchestrator import orchestrator_from_config
 from .personalization import PREFERENCE_GROUPS, Personalization, UserProfile
 from .task_state import TaskStateMachine
 from .tokens import ContextOverflowError
@@ -43,13 +44,22 @@ def build_agent(conversation) -> Agent:
         task=_task_from_config(conversation),
         invariants=_invariants_from_config(),
         tools=_tools_from_config(),
+        max_tool_steps=int((config.get("orchestrator", {}) or {}).get("max_steps", 6)),
     )
 
 
 def _tools_from_config() -> McpToolRuntime | None:
-    """Создаёт рантайм MCP-инструментов из секции ``tools`` (None — выключено)."""
+    """Создаёт рантайм MCP-инструментов (None — выключено).
+
+    Если включена секция ``orchestrator``, возвращается оркестратор нескольких
+    MCP-серверов (Day 20); иначе — рантайм одного сервера из секции ``tools``.
+    """
     try:
-        return runtime_from_config(load_config())
+        config = load_config()
+        orchestrator = orchestrator_from_config(config)
+        if orchestrator is not None:
+            return orchestrator
+        return runtime_from_config(config)
     except Exception:  # noqa: BLE001 — инструменты не должны ломать запуск
         return None
 
@@ -789,9 +799,10 @@ def print_help() -> None:
   /invariant_enforce     — вкл/выкл проверку ответа на нарушение инвариантов
 
 MCP-инструменты:
-  /tools                 — показать инструменты MCP-сервера и их параметры
-  /tool <имя> [<json>]   — вызвать MCP-инструмент напрямую и показать результат
+  /tools                 — показать серверы MCP и их инструменты с параметрами
+  /tool <имя> [<json>]   — вызвать инструмент напрямую и показать результат
                            (например: /tool get_public_projects {"query": "docs"})
+                           для нескольких серверов имя: /tool pipeline.search {"query": "docs"}
 
 Любая строка без слэша уходит модели как сообщение пользователя.
 """)
@@ -899,7 +910,14 @@ def main() -> None:
               "/invariant_enforce")
         print_invariant_status(agent)
     if agent.tools is not None:
-        print("MCP-инструменты: подключены (агент вызывает их сам под задачу).")
+        servers = getattr(agent.tools, "server_names", None)
+        if servers:
+            print(
+                f"MCP-серверы: {len(servers)} ({', '.join(servers)}); "
+                "агент сам ведёт длинный флоу между ними."
+            )
+        else:
+            print("MCP-инструменты: подключены (агент вызывает их сам под задачу).")
         print("  команды: /tools, /tool <имя> [<json-аргументы>]")
     print("Введите /help для списка команд.\n")
 
@@ -929,14 +947,28 @@ def main() -> None:
             continue
 
         print(f"\nАгент: {reply.content}\n")
-        if agent.tools is not None and agent.last_tool_call is not None:
-            call = agent.last_tool_call
-            result = agent.last_tool_result
-            status = "ошибка" if (result and result.is_error) else "результат получен"
-            print(
-                f"(MCP-вызов: {call.name} {json.dumps(call.arguments, ensure_ascii=False)} "
-                f"— {status})\n"
-            )
+        calls = agent.last_tool_calls
+        if agent.tools is not None and calls:
+            if len(calls) == 1:
+                call = calls[0]
+                result = agent.last_tool_results[0]
+                status = "ошибка" if result.is_error else "результат получен"
+                print(
+                    f"(MCP-вызов: {call.name} "
+                    f"{json.dumps(call.arguments, ensure_ascii=False)} — {status})\n"
+                )
+            else:
+                print(f"(MCP-флоу: вызовов {len(calls)})")
+                for index, (call, result) in enumerate(
+                    zip(calls, agent.last_tool_results), start=1
+                ):
+                    server = result.server or "—"
+                    status = "ошибка" if result.is_error else "ok"
+                    print(
+                        f"  {index}. [{server}] {call.name} — {status} "
+                        f"{json.dumps(call.arguments, ensure_ascii=False)}"
+                    )
+                print()
         if agent.invariants is not None and agent.last_guard_violation:
             print("(ассистент отказался: предложенное решение нарушало инвариант)\n")
         if agent.task is not None and agent.last_transition_violation:

@@ -52,6 +52,31 @@
     "output_path": "history/pipeline_result.md",
     "timeout": 60
   },
+  "orchestrator": {
+    "enabled": true,
+    "max_steps": 6,
+    "servers": [
+      {
+        "name": "gitflic",
+        "command": "python3",
+        "args": ["mcp/gitflic_server.py"],
+        "env": {
+          "GITFLIC_TOKEN": "your-gitflic-access-token",
+          "GITFLIC_API_URL": "https://api.gitflic.ru"
+        }
+      },
+      {
+        "name": "pipeline",
+        "command": "python3",
+        "args": ["mcp/pipeline_server.py"]
+      },
+      {
+        "name": "report",
+        "command": "python3",
+        "args": ["mcp/report_server.py"]
+      }
+    ]
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

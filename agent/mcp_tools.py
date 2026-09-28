@@ -38,10 +38,15 @@ class ToolSpec:
 
 @dataclass
 class ToolCall:
-    """Выбранный агентом вызов инструмента: имя и аргументы."""
+    """Выбранный агентом вызов инструмента: имя и аргументы.
+
+    ``server`` заполняется, когда вызов идёт через оркестратор нескольких
+    серверов (Day 20); для одного сервера остаётся ``None``.
+    """
 
     name: str
     arguments: dict
+    server: str | None = None
 
 
 @dataclass
@@ -53,6 +58,7 @@ class ToolResult:
     content: str
     structured: dict | None = None
     is_error: bool = False
+    server: str | None = None
 
 
 PLAN_PROMPT = """Ты — диспетчер инструментов. Тебе дан список доступных MCP-инструментов
@@ -194,8 +200,15 @@ class McpToolRuntime:
                 lines.append(f"     параметры: {params}  (* — обязательный)")
         return "\n".join(lines)
 
-    def plan_messages(self, user_request: str) -> list[dict]:
-        """Сообщения для выбора инструмента и аргументов под запрос."""
+    def plan_messages(
+        self, user_request: str, results: list[dict] | None = None
+    ) -> list[dict]:
+        """Сообщения для выбора инструмента и аргументов под запрос.
+
+        Если переданы ``results`` — результаты уже выполненных шагов, они уходят
+        в контекст, чтобы модель могла связать данные между вызовами (длинный
+        флоу, Day 20).
+        """
         specs = self.list_tools()
         if not specs:
             return []
@@ -209,6 +222,11 @@ class McpToolRuntime:
                 }
             )
         prompt = PLAN_PROMPT + json.dumps(catalog, ensure_ascii=False, indent=2)
+        if results:
+            prompt += (
+                "\n\nУже выполненные шаги (используй их результаты):\n"
+                + json.dumps(results, ensure_ascii=False, indent=2)
+            )
         return [
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_request},
@@ -234,6 +252,7 @@ class McpToolRuntime:
 
     def result_message(self, result: ToolResult) -> dict:
         """System-сообщение с результатом вызова, которое видит основная модель."""
+        label = f"{result.server}.{result.name}" if result.server else result.name
         payload = result.structured
         detail = (
             json.dumps(payload, ensure_ascii=False, indent=2)
@@ -243,7 +262,7 @@ class McpToolRuntime:
         return {
             "role": "system",
             "content": (
-                f"Результат вызова MCP-инструмента {result.name} "
+                f"Результат вызова MCP-инструмента {label} "
                 f"с аргументами {json.dumps(result.arguments, ensure_ascii=False)}:\n"
                 f"{detail}\n"
                 "Используй эти данные в ответе пользователю."

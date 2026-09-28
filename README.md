@@ -1,3 +1,107 @@
+# Day 20: Orchestration MCP — several servers, routing and a long agent flow
+
+Several MCP servers are registered at once, their tools are merged into a single
+catalog, and the agent itself drives a **long interaction flow** across them:
+on every step the LLM picks the next tool on any server, the call is **routed**
+to the server that declares it, and its result feeds the next step.
+
+## Registered servers
+
+`agent/orchestrator.py` builds the servers from the `orchestrator.servers`
+config section (each entry: `name`, `command`, `args`, `env`, `cwd`, `timeout`).
+The GitFlic token/API URL are pulled from the `tools`/`pipeline` sections if a
+server does not define them.
+
+| Server | Server file | Tools |
+| --- | --- | --- |
+| `gitflic` | `mcp/gitflic_server.py` | `get_public_projects`, `count_public_projects`, `schedule_project_count`, `list_count_jobs`, `cancel_count_job`, `get_project_count_report` |
+| `pipeline` | `mcp/pipeline_server.py` | `search`, `summarize`, `saveToFile`, `run_pipeline` |
+| `report` | `mcp/report_server.py` (new) | `list_reports`, `record_run`, `build_report_index` |
+
+`report` is a local server (no network): it lists saved reports, writes a run
+journal (`history/report_runs.json`) and builds a combined Markdown report index.
+
+## Routing
+
+`McpOrchestrator` keeps one `McpToolRuntime` per server. Tools are exposed as
+`server.tool`, and `resolve()` finds the target server by a qualified name or by
+a short name (an ambiguous or unknown name is an error). `call()` then sends the
+invocation to exactly that server and stamps the result with `server`, so it is
+always visible which server answered. The agent sees the whole catalog
+(`catalog()`) and the server of every tool while choosing the next call.
+
+## Long agent flow
+
+`Agent` accepts either one server (`McpToolRuntime`, Days 17–19) or the
+orchestrator. `Agent._maybe_call_tool` is now a **loop** (`max_tool_steps`,
+default 6): it asks the LLM for the next tool (the prompt includes the catalog
+and all results already received), routes and calls it, appends the result to the
+context, and repeats until the model answers `{"tool": null}`, an error occurs,
+or a call repeats. The full ordered trace is available via
+`agent.last_tool_calls` / `agent.last_tool_results` (`last_tool_call` /
+`last_tool_result` still return the last one).
+
+## Verification
+
+`verify_agent_flow(trace, results, required_servers=..., min_servers=...)`
+confirms the **choice of servers and the order of calls**:
+
+* at least `min_servers` different servers were used (all `required_servers`);
+* every call was routed to the server that declares that tool;
+* the order is functionally correct: data is fetched before it is processed,
+  processing/saving happens before the run journal, and aggregation happens last.
+
+`describe_flow` prints the trace (`step. [server] tool [status] → result keys`).
+
+## Run
+
+```bash
+# offline: agent loop on deterministic stub servers (no network/LLM)
+python3 -m agent.orchestration_scenarios --offline
+
+# live: real LLM selects tools, real MCP servers (GitFlic token needed)
+GITFLIC_TOKEN=<token> python3 -m agent.orchestration_scenarios --query docs --size 5
+GITFLIC_TOKEN=<token> python3 -m agent.orchestration_scenarios --max-steps 6
+
+# routing/verification self-test without MCP
+python3 -m agent.orchestrator
+
+# report server without MCP
+python3 mcp/report_server.py --check --list
+python3 mcp/report_server.py --check --index
+```
+
+`agent/orchestration_scenarios.py` walks through: server registration and their
+tools, the merged catalog, the long agent flow with the ordered trace, the
+server/order check, and the saved report/index files.
+
+In the CLI (`python3 -m agent.cli`) an enabled `orchestrator` section replaces the
+single-server runtime; `/tools` lists servers with their tools and
+`/tool pipeline.search {"query": "docs"}` calls a routed tool directly.
+
+## What was added
+
+- `mcp/report_server.py` — the third local MCP server (`list_reports`,
+  `record_run`, `build_report_index`; `--check --list|--index`).
+- `agent/orchestrator.py` — `ServerSpec`, `RoutedTool`, `ToolRoutingError`,
+  `McpOrchestrator` (`list_routes`, `catalog`, `resolve`, `call`, `summarize`,
+  `plan_messages`, `parse_plan`, `result_message`), `StaticToolRuntime` (offline
+  stubs), `orchestrator_from_config`, `verify_agent_flow`, `describe_flow`, and an
+  offline self-test (`python3 -m agent.orchestrator`).
+- `agent/agent.py` — `tools` may be an orchestrator; `_maybe_call_tool` runs a
+  bounded multi-step loop; `max_tool_steps`, `last_tool_calls`,
+  `last_tool_results`.
+- `agent/mcp_tools.py` — `ToolCall.server` / `ToolResult.server`;
+  `plan_messages(user, results)`; server-aware `result_message`.
+- `agent/orchestration_scenarios.py` — end-to-end scenario with a live and an
+  offline (`--offline`, `ScriptedLLMClient`) mode.
+- `agent/cli.py` — the orchestrator is preferred over the single server;
+  `/tools` shows servers, `/tool <server>.<tool>` routes a call, the reply prints
+  the full flow trace.
+
+Config keys (in the `orchestrator` section): `enabled`, `max_steps`, `servers`
+(each with `name`, `command`, `args`, `env`, `cwd`, `timeout`).
+
 # Day 19: Composition of MCP tools — search → summarize → saveToFile
 
 Several independent MCP tools are composed into an **automatic pipeline**: the
