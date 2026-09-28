@@ -1,3 +1,63 @@
+# Day 16: MCP connection and tool discovery
+
+`agent/mcp_client.py` is a **minimal MCP client** built on the official
+[`mcp`](https://pypi.org/project/mcp/) SDK (Streamable HTTP transport). It does
+exactly what the task asks:
+
+1. **Establishes an MCP connection** — opens a Streamable HTTP session and
+   initializes it (`streamablehttp_client` + `ClientSession.initialize`).
+2. **Fetches the list of available tools** — calls `tools/list` and prints every
+   tool with its description and input parameters.
+3. **Verifies the result** — the `--check` mode asserts that the server is
+   reachable, the protocol is negotiated, and the tool list is non-empty and
+   well-formed.
+
+The default server is the Aurora OS developer portal
+(`https://developer.auroraos.ru/api/mcp`, server `dev-aurora`). It only answers
+browser clients, so the client sends a **browser `User-Agent`** header
+(`BROWSER_USER_AGENT`, overridable with `--user-agent`). Session termination via
+`DELETE` is disabled (`terminate_on_close=False`) because that server rejects it.
+
+## Install
+
+```bash
+pip install mcp
+```
+
+## Run
+
+```bash
+cd ai_advent && python3 -m agent.mcp_client          # connect and print tools
+cd ai_advent && python3 -m agent.mcp_client --check  # connect and self-check
+cd ai_advent && python3 -m agent.mcp_client --json   # machine-readable output
+```
+
+Example (truncated):
+
+```
+==============================================================
+MCP: подключение и список инструментов
+==============================================================
+URL сервера     : https://developer.auroraos.ru/api/mcp
+Протокол        : 2025-03-26
+Сервер          : dev-aurora 1.0.0
+Соединение      : установлено
+Инструментов    : 8
+
+  1. get_doc_versions
+  2. search           параметры: query*, index, version, limit  (* — обязательный)
+  3. search_code      параметры: query*, limit
+  ...
+```
+
+## What was added
+
+- `agent/mcp_client.py` — `connect_and_list_tools()` (minimal connection +
+  `tools/list`), `verify_connection()`, pretty/JSON printers and a CLI
+  (`--url`, `--user-agent`, `--timeout`, `--json`, `--check`).
+
+Config keys (optional `mcp` section): `url`, `user_agent`, `timeout`.
+
 # Day 15: Controlled state transitions of a task
 
 `transition_scenarios.py` makes the agent's **task lifecycle strictly controlled**.
