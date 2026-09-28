@@ -1,3 +1,84 @@
+# Day 18: Planner and background tasks — counting GitFlic public projects
+
+The MCP server from Day 17 now also ships a **tool with delayed/periodic
+execution** around the public GitFlic API: it counts how many public projects
+exist, aggregates the result (total, by language, by owner), and **saves the
+data as JSON**. Periodic execution is driven by **cron**.
+
+## Tools
+
+`mcp/gitflic_server.py` registers, besides `get_public_projects`:
+
+| Tool | What it does |
+| --- | --- |
+| `count_public_projects` | Counts public projects **now**, aggregates, saves a JSON snapshot, returns the aggregate. |
+| `schedule_project_count` | Schedules the count **delayed** (`delay_seconds`) or **periodic** (`interval_seconds`); returns a `jobId`. |
+| `list_count_jobs` | Lists scheduled jobs: status, next run, number of runs. |
+| `cancel_count_job` | Cancels a periodic job by `jobId`. |
+| `get_project_count_report` | Returns the aggregated result of the last count and the snapshot history. |
+
+The exact number of public projects comes from the API pagination
+(`totalElements`) on the first page, so the count is accurate and fast; the
+by-language/by-owner breakdown is a **sample** over `max_pages` pages
+(`countedProjects`, `sampled`).
+
+## Data and scheduling
+
+- **JSON storage** — `history/gitflic_counts.json` keeps snapshots
+  (`{"createdAt", "updatedAt", "snapshots": [...]}`) with
+  `totalPublicProjects`, `languages`, `topOwners`, `topTopics`, timestamps.
+  Job schedules live in `history/gitflic_jobs.json`. Both are written
+  atomically, and both paths can be overridden with `GITFLIC_COUNT_STORE` /
+  `GITFLIC_JOBS_STORE`.
+- **Schedule/execution** — because an MCP stdio session lives for a single tool
+  call, schedules are **persisted** and executed by an external runner:
+  `mcp/gitflic_cron.py`. `--run-due` executes every job whose `nextRunAt` is
+  due (and re-schedules periodic ones); `--once` performs a plain count. The
+  same module can run as a daemon (`--daemon`).
+
+## Run
+
+```bash
+# tool discovery, delayed job, cron execution, aggregated report
+GITFLIC_TOKEN=<token> python3 -m agent.scheduler_scenarios
+GITFLIC_TOKEN=<token> python3 -m agent.scheduler_scenarios --interval 60
+GITFLIC_TOKEN=<token> python3 -m agent.scheduler_scenarios --agent "сколько публичных проектов в gitflic"
+
+# direct tool call (count + aggregate + JSON snapshot)
+GITFLIC_TOKEN=<token> python3 mcp/gitflic_server.py --check --count
+# the cron entrypoint (token falls back to tools.gitflic_token in config)
+python3 mcp/gitflic_cron.py            # one count
+python3 mcp/gitflic_cron.py --run-due  # run scheduled jobs
+python3 mcp/gitflic_cron.py --print-crontab  # ready-to-paste lines
+```
+
+`gitflic_cron.py` takes the token from `GITFLIC_TOKEN`, and if it is not set,
+from `tools.gitflic_token` in `config.one.json` / `config.json`. API/network
+errors are reported as an aggregated `{"error": ...}` result with exit code 1.
+
+Crontab (installed once):
+
+```cron
+# count public projects every hour
+5 * * * * cd /path/to/ai_advent && GITFLIC_TOKEN=<token> python3 mcp/gitflic_cron.py >> history/gitflic_cron.log 2>&1
+# run delayed/periodic jobs every minute
+* * * * * cd /path/to/ai_advent && GITFLIC_TOKEN=<token> python3 mcp/gitflic_cron.py --run-due >> history/gitflic_cron.log 2>&1
+```
+
+## What was added
+
+- `mcp/gitflic_api.py` — shared low-level GitFlic API access
+  (`request_json`, `normalize_project`, `fetch_public_projects`), used by the
+  server, the scheduler and the cron runner.
+- `mcp/gitflic_scheduler.py` — `CountStore` (snapshots JSON), `JobStore`
+  (schedules JSON), `aggregate_projects`, `ProjectCounter`, and
+  `ProjectCountScheduler` (`schedule`, `due_jobs`, `run_due`, `start_daemon`).
+- `mcp/gitflic_server.py` — the five new tools above; `--check --count`.
+- `mcp/gitflic_cron.py` — cron entrypoint (`--once`, `--run-due`, `--daemon`,
+  `--print-crontab`).
+- `agent/scheduler_scenarios.py` — end-to-end scenario: discovery, delayed job,
+  cron execution, aggregated report, optional agent call.
+
 # Day 17: The first MCP tool — public GitFlic projects
 
 `mcp/gitflic_server.py` is a **own MCP server** built on the official `mcp` SDK
