@@ -45,6 +45,13 @@
     "gitflic_api_url": "https://api.gitflic.ru",
     "timeout": 60
   },
+  "pipeline": {
+    "enabled": true,
+    "command": "python3",
+    "args": ["mcp/pipeline_server.py"],
+    "output_path": "history/pipeline_result.md",
+    "timeout": 60
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

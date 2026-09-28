@@ -1,3 +1,85 @@
+# Day 19: Composition of MCP tools — search → summarize → saveToFile
+
+Several independent MCP tools are composed into an **automatic pipeline**: the
+first tool **fetches** data, the second **processes** it, the third **saves** the
+result. The chain is executed automatically and data is passed from tool to tool.
+
+## Tools
+
+`mcp/pipeline_server.py` (FastMCP, stdio) registers:
+
+| Tool | Role in the pipeline | What it returns |
+| --- | --- | --- |
+| `search` | **fetches** public GitFlic projects (`mcp/gitflic_api.py`) | `{query, count, total, page, source, items: [{id,title,description,language,owner,topics,webUrl}]}` |
+| `summarize` | **processes** the projects (local extractive summarization, no network/LLM) | `{summary, bullets, keywords, itemCount, sentenceCount, wordCount}` |
+| `saveToFile` | **saves** the result atomically inside the project dir | `{path, relativePath, format, bytes, lines, savedAt}` |
+| `run_pipeline` | composes all three **in one MCP call** | `{ok, query, savedPath, summary, steps:[{name, tool, arguments, result}]}` |
+
+`summarize` uses `mcp/pipeline_text.py`: deterministic extractive summarization
+(sentence scoring by word frequency, stop-words ru/en). The same input always
+produces the same output, so data passing can be checked without a network or an
+LLM. `saveToFile` rejects any path that escapes the project root.
+
+## Composition and data passing
+
+`agent/pipeline.py` is the composition engine. Steps are declared and the engine
+runs them in order, resolving references of the form `${step.path.to.field}` in
+the next step's arguments from the previous steps' results:
+
+```python
+PipelineStep("search",    "search",    {"query": q, "size": n})
+PipelineStep("summarize", "summarize", {"items": "${search.items}"})
+PipelineStep("saveToFile","saveToFile",{"content": "${summarize.summary}", "path": out})
+```
+
+A string that is exactly one reference is replaced by the **original object**
+(list/dict), so structured data — not its string form — is passed between tools.
+`gitflic_summary_pipeline(...)` builds the chain above.
+
+`verify_pipeline_run(run)` checks the **correctness of data passing**: every step
+succeeded; the `items` that `summarize` received are exactly the `items` that
+`search` returned; the `content` that `saveToFile` received is exactly the
+`summary` that `summarize` returned; and the file exists and matches `content`.
+
+## Run
+
+```bash
+# offline self-test of the composition engine (no MCP, no network)
+python3 -m agent.pipeline
+
+# full scenario: discovery, automatic chain, data-passing check, composite call
+GITFLIC_TOKEN=<token> python3 -m agent.pipeline_scenarios --query docs --size 5
+GITFLIC_TOKEN=<token> python3 -m agent.pipeline_scenarios --skip-composite
+GITFLIC_TOKEN=<token> python3 -m agent.pipeline_scenarios --agent "собери отчёт по проектам gitflic про docs"
+
+# direct tool calls without MCP
+GITFLIC_TOKEN=<token> python3 mcp/pipeline_server.py --check --query docs
+GITFLIC_TOKEN=<token> python3 mcp/pipeline_server.py --check --pipeline --query docs
+```
+
+`agent/pipeline_scenarios.py` walks through: tool discovery, the automatically
+executed `search → summarize → saveToFile` chain, the data-passing verification,
+the server-side composite `run_pipeline`, the saved report, and an optional
+agent-level call. The GitFlic token comes from `GITFLIC_TOKEN` or the `pipeline`
+section, falling back to `tools.gitflic_token`.
+
+## What was added
+
+- `mcp/pipeline_text.py` — local extractive summarization (`tokenize`,
+  `split_sentences`, `summarize_text`, `summarize_items`, `item_bullet`).
+- `mcp/pipeline_server.py` — the four tools above; `search` reuses the GitFlic
+  API layer, `saveToFile` writes atomically inside the project; `--check`
+  (`--pipeline`, `--query`, `--size`, `--output`) runs tools without MCP.
+- `agent/pipeline.py` — `PipelineStep`, `StepResult`, `PipelineRun`, `Pipeline`
+  (automatic sequential execution), `resolve_refs` (`${...}` references),
+  `gitflic_summary_pipeline`, `verify_pipeline_run`, `pipeline_runtime_from_config`
+  and an offline self-test (`python3 -m agent.pipeline`).
+- `agent/pipeline_scenarios.py` — end-to-end scenario with the chain, the
+  data-passing check and the composite call.
+
+Config keys (in the `pipeline` section): `enabled`, `command`, `args`,
+`output_path`, `timeout`, `gitflic_token`, `gitflic_api_url`.
+
 # Day 18: Planner and background tasks — counting GitFlic public projects
 
 The MCP server from Day 17 now also ships a **tool with delayed/periodic
