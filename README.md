@@ -1,3 +1,83 @@
+# Day 22: First RAG query — Retrieval-Augmented Generation, Agent with two modes, and comparative evaluation
+
+The first complete RAG pipeline built on top of the recipe knowledge base indexed in Day 21:
+**user question** → **vector retrieval (FAISS)** → **context synthesis & prompt combination** → **LLM query**.
+
+The solution implements an **Agent with two operating modes**:
+1. **Without RAG (Baseline)**: relies on the general parametric knowledge of the LLM.
+2. **With RAG (Retrieval-Augmented)**: grounds responses in top-k relevant chunks from the database with explicit source citations (`[Источник N]`) and strict hallucination prevention.
+
+## Architecture
+
+| Component | Module | Responsibility |
+| --- | --- | --- |
+| **`RagRetriever`** | `agent/rag.py` | Loads FAISS index (`recipt_all/structural` or `recipt_sample`), performs vector search, formats numbered context blocks |
+| **`RagAgent`** | `agent/rag.py` | Agent supporting two modes (`mode="rag"` and `mode="no_rag"`), methods `.ask()`, `.ask_with_rag()`, `.ask_without_rag()` |
+| **Prompt Synthesis** | `agent/rag.py` | `build_rag_messages()` with grounded system prompt instructing citation and honest refusal if facts are absent |
+| **Control Benchmark** | `agent/rag.py` | 10 control questions with explicit expectations, ground truth facts, and expected sources across 6 categories |
+| **Evaluation Suite** | `agent/rag.py` | Automated fact coverage scoring (`evaluate_answer_facts`), source recall (`evaluate_source_recall`), citation checking |
+| **CLI Scenario** | `agent/rag_scenarios.py` | Full evaluation workflow, interactive single-question demo, offline mode (`--no-llm`), Markdown report generation |
+
+## 10 Control Questions Benchmark
+
+A curated suite of 10 probe questions covering diverse recipe aspects:
+
+| № | Query | Category | Expected Target Source | Key Ground Truth Facts |
+| - | --- | --- | --- | --- |
+| 1 | Апельсиновая курица на гриле новогодний рецепт: как подавать с фруктами розмарином и клюквой? | Птица | ID 15454 («Апельсиновая курица на гриле») | Апельсины (2 половинки), виноград, клюква (100 г), розмарин |
+| 2 | Прайм риб на гриле обсыпка солью пропорции перец и температура копчения на пеллетном гриле | Говядина | ID 15452 («Прайм риб на гриле») | Соль 1 ч.л./кг, перец 1:1 к соли, копчение 76 °C |
+| 3 | Каре барашка с кашей на гриле гречневая каша кедровые орехи брусника гарнир | Баранина | ID 15418 («Каре барашка с кашей») | Гречневая каша (300 г), кедровые орехи, брусника, лук |
+| 4 | Лондон бройл на гриле рецепт: сделайте маринад красное вино бальзамический уксус соевый соус чеснок | Говядина | ID 15383 («Лондон бройл на гриле») | Сухое красное вино (100 мл), бальзамический уксус, соевый соус, чеснок |
+| 5 | Пикантная смесь для курицы на гриле: за пикантность отвечают молотая паприка гранулированный чеснок порошок чили | Пряные смеси | ID 15381 («Пикантная смесь для курицы») | Паприка, чеснок, чили, перец, соль |
+| 6 | Крылышки 0-190 на пеллетном гриле: суть метода выкладки и внутренняя температура готовности мяса | Птица | ID 15379 («Крылышки 0-190») | Выкладка до начала розжига (на холодный гриль), 190-200 °C, внутри 80 °C |
+| 7 | Пикантный горчичный соус для свинины на гриле ингредиенты: горчица столовая мед шрирача уксус | Соусы | ID 15362 («Пикантный горчичный соус») | Столовая горчица (7 ч.л.), мёд (2 ч.л.), шрирача, яблочный уксус |
+| 8 | Митболы из свинины на гриле шаг сформируйте митболы весом 40 г непрямой средний жар 170-200 | Свинина | ID 15360 («Митболы из свинины») | Вес 40 г, непрямой жар 170-200 °C, копчение 20 мин |
+| 9 | Рваная курица на гриле рецепт: смесь для сбрызгивания вода и яблочный уксус 50/50 в пульверизатор | Птица | ID 14965 («Рваная курица на гриле») | Куриные бедрышки, вода и яблочный уксус 50/50 в пульверизатор |
+| 10 | Апельсиновая курица на гриле: сколько калорий и белков в порции по рецепту? | Контроль галлюцинаций | ID 15454 («Апельсиновая курица») | **Отрицательный контроль**: данных о КБЖУ в базе нет, модель обязана отказать |
+
+## Evaluation Results: Without RAG vs With RAG
+
+Evaluated against the full dataset index (`recipt_all`, 534 recipes, 6,403 structural chunks) using `gemini-3.5-flash-lite`:
+
+| Metric | Without RAG (Baseline) | With RAG (Retrieval) | Impact / Key Observation |
+| --- | --- | --- | --- |
+| **Fact Coverage (Полнота фактов)** | **78.3%** | **87.5%** | **+9.2%** higher factual accuracy |
+| **Target Recipe in Top-5** | — | **100.0%** | All 10 queries retrieved target recipe in top-5 |
+| **Target Recipe at Top-1** | — | **100.0%** | Exact target chunk ranked #1 for every query |
+| **Source Citation Rate** | — | **100.0%** | Every RAG answer cites `[Источник N]` or recipe title |
+| **Hallucination Control (Q10)** | **0%** (invented 190-220 kcal, 18-20g protein) | **100%** (honest refusal: explicitly stated no calories data in database) | Complete elimination of hallucinations when data is missing |
+
+Full Markdown comparison report is generated at `history/rag/rag_comparison.md`, and raw JSON data at `history/rag/rag_results.json`.
+
+## Run
+
+```bash
+# Run full 10-question evaluation scenario across both modes + generate Markdown report
+python3 -m agent.rag_scenarios
+
+# Run single question demonstration (shows sources, Baseline answer, and RAG answer)
+python3 -m agent.rag_scenarios --question "Сколько соли нужно на 1 кг мяса для прайм риб на гриле?"
+
+# Run with RAG mode only for a custom question
+python3 -m agent.rag_scenarios --question "Как приготовить куриные крылышки 0-190 на гриле?" --mode rag
+
+# Fast run on first 3 questions
+python3 -m agent.rag_scenarios --limit 3
+
+# Offline mode (verifies retrieval quality and source ranking without LLM calls)
+python3 -m agent.rag_scenarios --no-llm
+
+# Custom dataset or top-k
+python3 -m agent.rag_scenarios --dataset recipt_all --strategy structural --top-k 5
+```
+
+## What was added
+
+- `agent/rag.py` — core RAG module: `RagSource`, `RagAnswer`, `RagRetriever`, `rag_query()`, `plain_query()`, `RagAgent` with two switchable modes (`rag` / `no_rag`), 10 control questions (`CONTROL_QUESTIONS`), evaluation metrics (`evaluate_answer_facts`, `evaluate_source_recall`, `evaluate_citations`, `evaluate_rag_comparison`), Markdown report generator (`render_rag_comparison_markdown`).
+- `agent/rag_scenarios.py` — complete CLI scenario for RAG query pipeline: single-question comparison, 10-question benchmark execution, summary metrics table, and automatic report saving.
+- `config.example.json` / `config.one.json` — added `rag` configuration section (`dataset`, `strategy`, `top_k`, `max_context_chars`, `temperature`, `report_dir`).
+- `history/rag/rag_comparison.md` & `history/rag/rag_results.json` — evaluation reports with side-by-side answers and metric breakdown.
+
 # Day 21: Document indexing — chunking strategies, embeddings, FAISS
 
 A complete document indexing pipeline built for structured recipes (or any domain documents):

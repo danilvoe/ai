@@ -90,6 +90,15 @@
     "chunk_overlap": 80,
     "top_k": 5
   },
+  "rag": {
+    "enabled": true,
+    "dataset": "recipt_all",
+    "strategy": "structural",
+    "top_k": 5,
+    "max_context_chars": 6000,
+    "temperature": 0.2,
+    "report_dir": "history/rag"
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

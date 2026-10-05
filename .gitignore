@@ -3,3 +3,4 @@ config.one.json
 config.json.save
 history/
 __pycache__/
+recipt_all.json
