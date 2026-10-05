@@ -99,6 +99,26 @@
     "temperature": 0.2,
     "report_dir": "history/rag"
   },
+  "reranking": {
+    "enabled": true,
+    "dataset": "recipt_all",
+    "strategy": "structural",
+    "retrieve_k": 15,
+    "final_k": 5,
+    "min_score": 0.33,
+    "score_ratio": 0.0,
+    "min_keep": 1,
+    "method": "heuristic",
+    "rewrite": "heuristic",
+    "weights": {
+      "vector": 0.50,
+      "lexical": 0.30,
+      "title": 0.15,
+      "section": 0.05
+    },
+    "temperature": 0.2,
+    "report_dir": "history/rag_rerank"
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

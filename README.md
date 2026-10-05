@@ -1,3 +1,77 @@
+# Day 23: Reranking, Relevance Filtering, and Query Rewrite (Two-Stage RAG)
+
+A second-stage enhancement pipeline for Retrieval-Augmented Generation that purifies context, prevents distractors, and boosts answer accuracy:
+**user question** → **Query Rewrite** → **First-Stage Retrieval (retrieve_k=15)** → **Reranking (Heuristic/LLM)** → **Relevance Filter (min_score cutoff)** → **Filtered Context (final_k=5)** → **Grounded LLM Query**.
+
+## Architecture
+
+| Component | Module | Responsibility |
+| --- | --- | --- |
+| **`QueryRewriter`** | `agent/reranking.py` | Transforms colloquial questions into clean search queries; includes `HeuristicQueryRewriter` (stop words stripping, keyword extraction) and `LLMQueryRewriter` with automatic heuristic fallback |
+| **`RelevanceFilter`** | `agent/reranking.py` | Filters candidate chunks by similarity threshold (`min_score`), optional relative threshold (`score_ratio`), and protective minimum retention guardrail (`min_keep`) |
+| **`HeuristicReranker`** | `agent/reranking.py` | Hybrid cross-feature scorer blending vector similarity, exact lexical token matching, recipe title overlap, and section intent priority |
+| **`LLMReranker`** | `agent/reranking.py` | Cross-encoder style candidate scoring using a separate lightweight LLM model from configuration with automatic JSON parsing and heuristic fallback |
+| **`RerankPipeline`** | `agent/reranking.py` | End-to-end two-stage orchestrator managing candidates before and after filtering (`retrieve_k` → rerank → filter → `final_k`) |
+| **`RerankRagAnswer`** | `agent/reranking.py` | Response model carrying answer content, source attribution, timing breakdown, and full diagnostic details of kept vs dropped candidates |
+| **Evaluation Suite** | `agent/reranking.py` | Computes Precision@K, Noise Filter Ratio, Context Reduction, Source Recall, and Fact Coverage across tested modes |
+| **CLI Scenario** | `agent/reranking_scenarios.py` | Interactive demo, offline verification (`--no-llm`), 5-mode benchmark execution, and Markdown/JSON report export |
+
+## Two-Stage Parameters: Top-K Before/After & Cutoff Threshold
+
+| Parameter | Default Value | Role in Pipeline |
+| --- | --- | --- |
+| **`retrieve_k`** (Top-K before filtering) | **15** | Casts a wider net during initial dense FAISS search to capture all potentially relevant sections |
+| **`final_k`** (Top-K after filtering) | **5** | Maximum number of purified chunks passed into the LLM context prompt |
+| **`min_score`** (Cutoff Threshold) | **0.33** | Strict relevance cutoff discarding weak chunks (below cosine similarity / composite rerank score) |
+| **`min_keep`** | **1** | Safety guard ensuring RAG context is never completely empty |
+| **`rerank_weights`** | Vector: 0.50, Lexical: 0.30, Title: 0.15, Section: 0.05 | Weights for hybrid composite score in `HeuristicReranker` |
+
+## Empirical Mode Comparison: 10 Control Questions Benchmark
+
+Evaluated against the full recipe knowledge base (`recipt_all`, 534 recipes, 6,403 chunks) using `gemini-3.5-flash-lite`:
+
+| Mode | Precision@K | Source Recall | Top-1 Hit | Fact Coverage | Citations | Avg Chunks | Noise Filtered |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **1. Baseline (Day 22: no filter, no rewrite)** | 56.0% | 100.0% | 100.0% | 87.5% | 100.0% | 5.0 | 0.0% |
+| **2. Filter Only (threshold min_score=0.33)** | 85.2% | 100.0% | 100.0% | 85.0% | 90.0% | 3.3 | 94.8% |
+| **3. Rerank Only (heuristic reranker)** | 62.0% | 100.0% | 100.0% | **90.8%** | 90.0% | 5.0 | 84.7% |
+| **4. Query Rewrite Only (heuristic rewrite)** | 44.0% | 100.0% | 90.0% | 80.0% | 90.0% | 5.0 | 0.0% |
+| **5. Full Improved RAG (rewrite + filter + rerank)** | **82.3%** | **100.0%** | **100.0%** | **90.8%** | 90.0% | **3.7** | **94.6%** |
+
+### Key Impacts of the Two-Stage Enhancement (Full vs Baseline):
+- **+26.3% higher context precision**: Precision@K increased from 56.0% to 82.3%, eliminating distractor chunks from unrelated recipes.
+- **94.6% noise reduction**: 94.6% of irrelevant candidate chunks retrieved at stage 1 were successfully filtered out before prompt assembly.
+- **+3.3% higher factual accuracy**: Fact coverage reached 90.8% due to cleaner context and higher ranking of critical recipe sections.
+- **26% context compression**: Reduced average context from 5.0 to 3.7 chunks, lowering prompt token overhead and reducing hallucination surface.
+
+Full Markdown report is generated at `history/rag_rerank/reranking_comparison.md`, and raw JSON data at `history/rag_rerank/reranking_results.json`.
+
+## Run
+
+```bash
+# Full benchmark run across all modes with LLM responses + report generation
+python3 -m agent.reranking_scenarios
+
+# Fast offline run (verifies retrieval, reranking, and filter metrics with zero API calls)
+python3 -m agent.reranking_scenarios --no-llm
+
+# Step-by-step demonstration on a single question (shows rewrite, candidates, filter/rerank decisions)
+python3 -m agent.reranking_scenarios --question "Сколько соли нужно на 1 кг мяса для прайм риб на гриле?"
+
+# Quick run on first 3 questions
+python3 -m agent.reranking_scenarios --limit 3
+
+# Custom top-K and similarity cutoff threshold
+python3 -m agent.reranking_scenarios --retrieve-k 20 --final-k 5 --min-score 0.35
+```
+
+## What was added
+
+- `agent/reranking.py` — core two-stage module: `RankedSource`, `RerankOutcome`, `HeuristicQueryRewriter`, `LLMQueryRewriter`, `RelevanceFilter`, `HeuristicReranker`, `LLMReranker`, `RerankPipeline`, `rag_query_with_pipeline()`, evaluation metrics (`evaluate_precision_at_k`, `evaluate_noise_filter`), Markdown report generator (`render_rerank_comparison_markdown`).
+- `agent/reranking_scenarios.py` — CLI scenario supporting single-question inspection, offline metric evaluation (`--no-llm`), 5-mode comparative benchmarking, and report saving.
+- `config.example.json` / `config.one.json` — added `reranking` configuration section (`retrieve_k`, `final_k`, `min_score`, `score_ratio`, `method`, `rewrite`, `weights`, `report_dir`).
+- `history/rag_rerank/reranking_comparison.md` & `history/rag_rerank/reranking_results.json` — evaluation reports with side-by-side mode metrics.
+
 # Day 22: First RAG query — Retrieval-Augmented Generation, Agent with two modes, and comparative evaluation
 
 The first complete RAG pipeline built on top of the recipe knowledge base indexed in Day 21:
