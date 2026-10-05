@@ -1,0 +1,6 @@
+history/
+__pycache__/
+.ruff_cache/
+*.index
+*.json.save
+recipt_sample.json
