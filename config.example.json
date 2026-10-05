@@ -119,6 +119,16 @@
     "temperature": 0.2,
     "report_dir": "history/rag_rerank"
   },
+  "grounding": {
+    "enabled": true,
+    "dataset": "recipt_all",
+    "strategy": "structural",
+    "relevance_threshold": 0.33,
+    "top_k": 5,
+    "max_context_chars": 6000,
+    "temperature": 0.2,
+    "report_dir": "history/rag_grounding"
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

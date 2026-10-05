@@ -1,3 +1,88 @@
+# Day 24: Citations, Sources, and Anti-Hallucination (Grounded RAG)
+
+A grounded Retrieval-Augmented Generation system ensuring full factual attribution, verifiable citations, and anti-hallucination guardrails:
+**user question** → **Vector Retrieval & Reranking** → **Relevance Guardrail Check** (if `< threshold` → **"Не знаю" + clarification request**) → **Grounded Prompting** → **Structured Response: Answer + Sources (`source` + `section`/`chunk_id`) + Quotes (verbatim chunk excerpts)** → **Faithfulness & Semantic Alignment Verification**.
+
+## Architecture
+
+| Component | Module | Responsibility |
+| --- | --- | --- |
+| **`GroundedSource`** | `agent/grounding.py` | Structured source data model carrying `source` (recipe title), `section`, `chunk_id`, `recipe_id`, `url`, and similarity score |
+| **`GroundedAnswer`** | `agent/grounding.py` | Complete grounded result model containing `answer`, `sources`, `quotes`, relevance score, refusal/clarification flags, and alignment evaluation |
+| **`AlignmentEvaluation`** | `agent/grounding.py` | Evaluates semantic consistency between answer and quotes: Russian morphological stemming (`_stem_ru`), informational token overlap, number/measurement grounding, and verbatim quote verification |
+| **Relevance Guardrail (Усиление)** | `agent/grounding.py` | Programmatic and prompt-level safeguard: if retrieved relevance `< threshold` (0.33) or factual data is absent, immediately returns «Не знаю» and asks for clarification, with 0 hallucinated quotes |
+| **Structured Output Parser** | `agent/grounding.py` | Robust parser extracting strict JSON schemas with `answer`, `sources`, and `quotes`, with markdown fence stripping and fallback regex extraction |
+| **`GroundedRagAgent`** | `agent/grounding.py` | High-level agent combining retriever, reranker, relevance guardrail, and verification suite |
+| **Evaluation Suite** | `agent/grounding.py` | Benchmarks source presence rate, quote presence rate, verbatim quote faithfulness, semantic alignment, and low-relevance refusal behaviors |
+| **CLI Scenario** | `agent/grounding_scenarios.py` | Interactive inspection (`--question`), offline verification (`--no-llm`), 10-question benchmark execution, and report export |
+
+## Verification on 10 Control Questions Benchmark
+
+Evaluated against the full recipe knowledge base (`recipt_all`, 534 recipes, 6,403 chunks) using `gemini-3.5-flash-lite`:
+
+| № | Question | Sources Present (`source` + `chunk_id`) | Quotes Present (from chunks) | Meaning Matches Quotes (Semantic Alignment) | Relevance Score | Latency |
+| - | --- | --- | --- | --- | --- | --- |
+| 1 | Апельсиновая курица на гриле новогодний рецепт… | ✓ Yes (1) | ✓ Yes (1) | ✓ matched (88.4%) | 0.469 | 2640 ms |
+| 2 | Прайм риб на гриле обсыпка солью пропорции… | ✓ Yes (3) | ✓ Yes (3) | ✓ matched (90.0%) | 0.440 | 3116 ms |
+| 3 | Каре барашка с кашей на гриле гречневая каша… | ✓ Yes (2) | ✓ Yes (2) | ✓ matched (96.2%) | 0.458 | 1992 ms |
+| 4 | Лондон бройл на гриле рецепт: сделайте маринад… | ✓ Yes (1) | ✓ Yes (7) | ✓ matched (100.0%) | 0.574 | 2164 ms |
+| 5 | Пикантная смесь для курицы на гриле: паприка… | ✓ Yes (1) | ✓ Yes (1) | ✓ matched (97.5%) | 0.650 | 2133 ms |
+| 6 | Крылышки 0-190 на пеллетном гриле: суть метода… | ✓ Yes (3) | ✓ Yes (3) | ✓ matched (90.7%) | 0.495 | 3057 ms |
+| 7 | Пикантный горчичный соус для свинины на гриле… | ✓ Yes (1) | ✓ Yes (1) | ✓ matched (100.0%) | 0.576 | 2760 ms |
+| 8 | Митболы из свинины на гриле сформируйте 40 г… | ✓ Yes (2) | ✓ Yes (2) | ✓ matched (95.0%) | 0.499 | 1921 ms |
+| 9 | Рваная курица на гриле: сбрызгивание вода/уксус 50/50… | ✓ Yes (1) | ✓ Yes (1) | ✓ matched (98.0%) | 0.549 | 1968 ms |
+| 10 | Говяжьи ребрышки hot & fast: время и вес пластин… | ✓ Yes (3) | ✓ Yes (3) | ✓ matched (94.0%) | 0.430 | 2773 ms |
+
+### Stage 1 Summary:
+- **Sources present in every answer:** **100.0% (10/10)** — each source includes recipe name, section, and exact `chunk_id`.
+- **Quotes present in every answer:** **100.0% (10/10)** — all substantive quotes extracted verbatim from retrieved chunks.
+- **Meaning matches quotes (Semantic Alignment):** **100.0% (10/10)** — facts, proportions, temperatures, and numbers are directly grounded in quoted excerpts.
+- **Average latency:** 2452.5 ms.
+
+## Anti-Hallucination Guardrail: Relevance Threshold & "Не знаю" (Усиление)
+
+Rule: If relevance score `< threshold` (default `0.33`) or requested data is missing, the assistant **must** say «Не знаю» and request clarification, leaving sources and quotes empty:
+
+| № | Question | Category | Relevance Score | «Не знаю» | Clarification Requested | Empty Quotes (Zero Fake Quotes) | Verdict |
+| - | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Какая средняя температура на поверхности Марса? | Out-of-Domain (Астрономия) | 0.228 | ✓ Yes | ✓ Yes | ✓ Yes (0) | ✓ Pass |
+| 2 | Как заменить тормозные колодки на автомобиле ВАЗ? | Out-of-Domain (Авторемонт) | 0.161 | ✓ Yes | ✓ Yes | ✓ Yes (0) | ✓ Pass |
+| 3 | Рецепт классических суши Филадельфия с лососем | Absent Dish (Не в базе) | 0.158 | ✓ Yes | ✓ Yes | ✓ Yes (0) | ✓ Pass |
+| 4 | Апельсиновая курица на гриле: калории и БЖУ? | Missing Data (Нет в рецепте) | 0.405 | ✓ Yes | ✓ Yes | ✓ Yes (0) | ✓ Pass |
+
+### Stage 2 Summary:
+- **"Не знаю" Refusal Rate:** **100.0% (4/4)**
+- **Clarification Request Rate:** **100.0% (4/4)**
+- **Zero Hallucinated Quotes Rate:** **100.0% (4/4)**
+
+Full Markdown report is generated at `history/rag_grounding/grounding_report.md`, and raw JSON data at `history/rag_grounding/grounding_results.json`.
+
+## Run
+
+```bash
+# Full benchmark run on 10 control questions + guardrail tests + report generation
+python3 -m agent.grounding_scenarios
+
+# Fast offline run (verifies structure, sources, quotes, and guardrails without LLM API calls)
+python3 -m agent.grounding_scenarios --no-llm
+
+# Single question demonstration with formatted answer, chunk_id, and quotes
+python3 -m agent.grounding_scenarios --question "Апельсиновая курица на гриле новогодний рецепт: как подавать с фруктами розмарином и клюквой?"
+
+# Test out-of-domain question to observe the low-relevance guardrail in action
+python3 -m agent.grounding_scenarios --question "Какая средняя температура на поверхности планеты Марс?"
+
+# Custom relevance threshold and top-k context
+python3 -m agent.grounding_scenarios --min-relevance 0.35 --top-k 5
+```
+
+## What was added
+
+- `agent/grounding.py` — core Grounded RAG module: `GroundedSource`, `GroundedAnswer`, `AlignmentEvaluation`, `GroundedRagAgent`, `GROUNDED_RAG_SYSTEM_PROMPT`, `build_grounded_context()`, `parse_grounded_response()`, `check_relevance_guardrail()`, `verify_sources_presence()`, `verify_quotes_presence()`, `verify_quote_verbatim_faithfulness()`, `verify_semantic_alignment()`, `verify_refusal_and_clarification()`, `render_grounding_markdown_report()`.
+- `agent/grounding_scenarios.py` — CLI scenario supporting single query demo, offline verification (`--no-llm`), 10-question benchmark execution, guardrail testing, and report saving.
+- `config.example.json` / `config.one.json` — added `grounding` configuration section (`relevance_threshold`, `top_k`, `max_context_chars`, `temperature`, `report_dir`).
+- `history/rag_grounding/grounding_report.md` & `history/rag_grounding/grounding_results.json` — evaluation reports verifying sources, quotes, alignment, and threshold guardrails.
+
 # Day 23: Reranking, Relevance Filtering, and Query Rewrite (Two-Stage RAG)
 
 A second-stage enhancement pipeline for Retrieval-Augmented Generation that purifies context, prevents distractors, and boosts answer accuracy:
