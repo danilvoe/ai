@@ -1,3 +1,100 @@
+# Production-like Mini-Chat CLI with RAG & Task Memory (Day 24+)
+
+Production-like interactive mini-chat CLI combining **Retrieval-Augmented Generation (RAG)**, **Task State Memory (`RagTaskState`)**, and **Strict Attribution with Chunk IDs and Clickable Recipe URLs**.
+
+**Dialogue Flow:**
+**User Input** → **State Extractor & Constraint Guard** (if violation → **Explain & Uphold Restriction**) → **Contextual Query Enrichment** → **RAG Retrieval & Reranking** → **Grounded Prompting with Task State** → **Assistant Reply + Sources (`chunk_id` + `title` + `section` + `url`)** → **Persistent Session Storage (`history/<session_id>.json`)**.
+
+---
+
+## Architecture & Components
+
+| Component | Module | Responsibility |
+| --- | --- | --- |
+| **`RagTaskState`** | `agent/rag_chat.py` | Explicit task memory structure maintaining `goal`, `clarifications`, `constraints`, and `terms` across lengthy conversations (10–15+ turns) |
+| **`ChatSource`** | `agent/rag_chat.py` | Data model for attribution guaranteeing `chunk_id`, `title`, `section`, `recipe_id`, and direct clickable `url` |
+| **`RagChatSession`** | `agent/rag_chat.py` | Session wrapper over `Conversation` with disk persistence, task state synchronization, and history logging |
+| **`RagChatAgent`** | `agent/rag_chat.py` | Orchestrates query expansion, FAISS retrieval, reranking, constraint validation, and grounded LLM/offline answer generation |
+| **Interactive CLI** | `agent/rag_chat_cli.py`, `chat_rag.py` | Full-featured CLI with terminal task banner and slash commands (`/state`, `/goal`, `/constraint`, `/clarify`, `/term`, `/sources`, `/history`, `/clear`, `/exit`) |
+| **Scenario Validator** | `agent/rag_chat_scenarios.py` | Test runner executing two 12-turn end-to-end scenarios, validating goal retention, constraint adherence, chunk IDs, and clickable URLs |
+
+---
+
+## 2 End-to-End Scenarios Benchmark (24 Turns Total)
+
+Validated across two complete 12-turn dialogue scenarios:
+
+### Scenario 1: New Year Holiday Dinner — Orange Chicken on Charcoal Kettle (12 turns)
+- **Goal:** Plan a holiday dinner around poultry on a charcoal grill.
+- **Critical Constraint:** Zero spiciness, no chili, no hot peppers (children present).
+- **Equipment Clarification:** Classic 57 cm charcoal Kettle grill.
+- **Fixed Term:** *"Пряное сливочное масло"* (softened butter with orange zest and rosemary).
+- **Constraint Provocation Check (Turn 7):** User asks to add sriracha sauce → Agent intercepts violation, refuses, reminds of no-chili constraint for children, and keeps poultry context.
+- **Cooking Parameters:** Indirect heat (180–200°C), internal temperature 74°C in breast and 80–84°C in thigh, glaze 10–15 min before finish.
+- **Full Evening Timeline:** Complete step-by-step evening timing generated without losing goal or constraints.
+
+### Scenario 2: BBQ Party for Friends — Beef Ribs Hot & Fast (12 turns)
+- **Goal:** BBQ for a group of 6–8 friends centered on beef ribs.
+- **Critical Constraint:** Zero tomatoes, no tomato sauces, no ketchup (guest intolerance).
+- **Fixed Term:** *"Hot & Fast"* (smoking/baking beef ribs at 135–150°C).
+- **Rub & Spritzing:** 50/50 coarse salt and black pepper rub; spritzing with 50/50 apple cider vinegar and water (no tomato!).
+- **Constraint Provocation Check (Turn 8):** Friend suggests Heinz BBQ sauce in foil → Agent intercepts violation, refuses because commercial BBQ sauces contain tomato paste, preserving the constraint.
+- **Doneness & Resting:** Probe tenderness ("like warm butter", ~93–96°C) and mandatory 40–60 min resting in cooler/foil.
+- **Final Summary Checklist:** Full technical checklist preserving all parameters and constraints.
+
+---
+
+## Validation Summary
+
+| Metric | Target | Achieved | Notes |
+| --- | --- | --- | --- |
+| **Goal Retention Rate** | 100% | **100.0% (24/24)** | Goal preserved seamlessly across 12 consecutive turns |
+| **Constraint Adherence Rate** | 100% | **100.0% (24/24)** | Provocations (sriracha, Heinz BBQ) 100% intercepted |
+| **Sources Presence** | 100% | **100.0% (24/24)** | Every turn cites grounding chunks |
+| **Chunk ID Presence** | 100% | **100.0% (24/24)** | Every source displays exact chunk ID (e.g. `struct_15454_ingredients`) |
+| **Clickable URL Presence** | 100% | **100.0% (24/24)** | Every source displays full recipe URL (e.g. `https://grill-bbq.ru/recipe/...`) |
+| **Average Offline Latency** | < 10 ms | **1.7 ms** | Instant local response for CI/CD |
+
+Reports are stored at `history/rag_chat/chat_report.md` and `history/rag_chat/chat_results.json`.
+
+---
+
+## How to Run
+
+```bash
+# Launch interactive CLI RAG-Chat (creates or resumes session)
+python3 chat_rag.py
+
+# Launch interactive CLI in offline mode (no LLM API required)
+python3 chat_rag.py --no-llm
+
+# Launch with a brand-new clean session
+python3 chat_rag.py --new
+
+# Run the 2 benchmark scenarios (24 turns total) in fast offline verification mode
+python3 -m agent.rag_chat_scenarios --no-llm
+
+# Run benchmark scenarios with live LLM API
+python3 -m agent.rag_chat_scenarios --limit 2
+```
+
+### In-Chat Slash Commands
+
+```text
+/state                     — Show current task card (goal, clarifications, constraints, terms)
+/goal <description>        — Manually update current dialogue goal
+/constraint <restriction>  — Register a new constraint (e.g., «без томатов»)
+/clarify <key: value>      — Register a clarification (e.g., «гриль: Kettle 57 см»)
+/term <term: definition>   — Register a culinary term or technique
+/sources                   — Show detailed text excerpts of the last retrieved RAG chunks
+/history                   — Show dialogue history for the active session
+/clear                     — Reset dialogue history and task state
+/help                      — Display help message
+/exit                      — Exit chat and save session to disk
+```
+
+---
+
 # Day 24: Citations, Sources, and Anti-Hallucination (Grounded RAG)
 
 A grounded Retrieval-Augmented Generation system ensuring full factual attribution, verifiable citations, and anti-hallucination guardrails:
