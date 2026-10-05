@@ -1,3 +1,75 @@
+# Day 21: Document indexing — chunking strategies, embeddings, FAISS
+
+A complete document indexing pipeline built for structured recipes (or any domain documents):
+**chunking** → **metadata enrichment** → **vector embeddings** → **FAISS index** → **comparative evaluation**.
+
+The pipeline supports loading arbitrary recipe datasets: by default it indexes `recipt_sample.json`,
+and the `--source` parameter allows running against any larger or full production dataset.
+
+## Chunking strategies
+
+Two chunking strategies are implemented and compared:
+
+| Strategy | Principle | Metadata fields | Pros & Cons |
+| --- | --- | --- | --- |
+| **Fixed-size** (`fixed`) | Sliding window of $N$ characters (default 400) with overlap $M$ (default 80) and smart whitespace/sentence cutoffs | `recipe_id`, `title`, `section="document"`, `char_start`, `char_end`, `n_chars`, `n_tokens` | Simple, bounded chunk size, but splits cohesive sections and mixes unrelated text |
+| **Structural** (`structural`) | Semantic document decomposition: `header`, `ingredients`, `intro`, `step` (with temperature modes), `equipment` | `recipe_id`, `title`, `section`, `step_number`, `ingredient_count`, `equipment_count`, `temperatures` | Atomic, highly relevant chunks, section-targeted filtering, higher retrieval precision (100% Recall@1) |
+
+## Metadata enrichment
+
+Every generated chunk contains structured metadata:
+- `strategy`: name of the chunking strategy (`fixed` or `structural`);
+- `recipe_id`, `title`, `category`, `meal_type`, `difficulty`, `author`, `url`;
+- `section`: semantic section (`header`, `ingredients`, `intro`, `step`, `equipment`, or `document`);
+- `step_number`: integer step index (for recipe steps);
+- `char_start`, `char_end`, `n_chars`, `n_tokens`: character offsets and token estimates;
+- `source`: dataset file name.
+
+## Vector embeddings & FAISS index
+
+- **`HashingEmbedder`** (default, offline): deterministic feature-hashing embedder combining word unigrams, bigrams, and character 3/4-grams. Blake2b hashing with random sign into 256-dimensional $L_2$-normalized vectors. Zero external network or model weights, reproducible across runs.
+- **`OpenAIEmbedder`** (optional): embeddings via OpenAI-compatible `/embeddings` endpoint.
+- **`FaissIndex`**: wrapper over `faiss.IndexFlatIP` (exact inner-product on normalized vectors = cosine similarity).
+  Saves three artifacts under `history/index/<dataset>/<strategy>/`:
+  - `faiss.index` — binary FAISS vector index;
+  - `chunks.json` — all chunks with text and enriched metadata;
+  - `index_meta.json` — index metadata, dimensions, timestamp, and statistics.
+  Full index reload and integrity verification are checked automatically.
+
+## Comparison: Fixed vs Structural
+
+Evaluated on standard recipe probe queries (general queries, ingredient lookup, step/temperature instructions):
+
+- **Recall@1**: Structural reaches **100.0%** vs Fixed **50.0%** (atomic chunks prevent unrelated text dilution).
+- **MRR@5**: Structural achieves **1.000** vs Fixed **0.681**.
+- **Average top score**: Structural yields higher cosine similarity (**0.3414** vs **0.2793**).
+- Full Markdown report is written to `history/index/<dataset>/comparison.md`.
+
+## Run
+
+```bash
+# Install dependency (if not installed)
+pip install faiss-cpu
+
+# Run with sample recipes (offline, default)
+python3 -m agent.indexing_scenarios
+
+# Run with full/production dataset
+python3 -m agent.indexing_scenarios --source path/to/full_recipes.json
+
+# Run with custom query against both saved indexes
+python3 -m agent.indexing_scenarios --query "маринад для говядины с вином"
+
+# Custom chunk window and top-k
+python3 -m agent.indexing_scenarios --chunk-size 350 --overlap 70 --top-k 3
+```
+
+## What was added
+
+- `agent/indexing.py` — document loader (`load_recipes`), canonical text converter (`recipe_to_text`), chunking strategies (`chunk_fixed_size`, `chunk_structural`), embedders (`HashingEmbedder`, `OpenAIEmbedder`), FAISS index (`FaissIndex`), evaluation (`evaluate_retrieval`, `compare_strategies`, `render_comparison_markdown`).
+- `agent/indexing_scenarios.py` — complete CLI scenario loading datasets, chunking with both strategies, building and saving FAISS indexes, verifying reload, evaluating search quality, and writing comparison report.
+- `config.one.json` / `config.example.json` — added `indexing` configuration section (`source_path`, `index_dir`, `embedder`, `embedding_dim`, `chunk_size`, `chunk_overlap`, `top_k`).
+
 # Day 20: Orchestration MCP — several servers, routing and a long agent flow
 
 Several MCP servers are registered at once, their tools are merged into a single

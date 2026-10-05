@@ -80,6 +80,16 @@
       }
     ]
   },
+  "indexing": {
+    "enabled": true,
+    "source_path": "recipt_sample.json",
+    "index_dir": "history/index",
+    "embedder": "local",
+    "embedding_dim": 256,
+    "chunk_size": 400,
+    "chunk_overlap": 80,
+    "top_k": 5
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [
