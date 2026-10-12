@@ -129,6 +129,19 @@
     "temperature": 0.2,
     "report_dir": "history/rag_grounding"
   },
+  "local_llm": {
+    "enabled": true,
+    "llama_dir": "history/llama.cpp",
+    "model_path": "history/models/qwen2.5-3b-instruct-q4_k_m.gguf",
+    "host": "127.0.0.1",
+    "port": 8080,
+    "ctx_size": 8192,
+    "threads": 8,
+    "n_gpu_layers": 0,
+    "max_response_tokens": 1024,
+    "startup_timeout": 120,
+    "model_label": "local-llm"
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

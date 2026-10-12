@@ -2,7 +2,7 @@
 
 ## 1. Project Context & Branch Architecture
 
-This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 25**.
+This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 26**.
 
 - **Branch-per-Lesson Structure**: Each Git branch (`day2`, `day3`, ..., `day25`, `master`) represents the code state at that specific lesson.
 - **Cumulative Codebase**: The project evolves incrementally. For example, `day25` contains RAG chat with task state memory, while `day10` only contains early context management.
@@ -44,7 +44,7 @@ To prevent massive token consumption and context window exhaustion, any coding a
 
 ---
 
-## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 25)
+## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 26)
 
 Use this table to jump directly to the relevant file instead of traversing the filesystem:
 
@@ -74,6 +74,7 @@ Use this table to jump directly to the relevant file instead of traversing the f
 | **Day 23** | Two-stage RAG (Query rewrite, reranking, relevance filter) | `agent/reranking.py`, `agent/reranking_scenarios.py` | `python3 -m agent.reranking_scenarios --no-llm` |
 | **Day 24** | Grounded RAG (Citations, anti-hallucination threshold, quote alignment) | `agent/grounding.py`, `agent/grounding_scenarios.py` | `python3 -m agent.grounding_scenarios --no-llm` |
 | **Day 25** | Mini-Chat CLI with RAG, Task State memory & verified sources | `agent/rag_chat.py`, `agent/rag_chat_cli.py`, `agent/rag_chat_scenarios.py`, `chat_rag.py` | `python3 -m agent.rag_chat_scenarios --no-llm` |
+| **Day 26** | Local LLM via llama.cpp (build, CLI + OpenAI-compatible server) | `agent/local_llm.py`, `agent/local_llm_scenarios.py`, `chat_local.py`, `scripts/setup_llama_cpp.sh` | `python3 -m agent.local_llm_scenarios --offline` |
 
 ---
 
@@ -106,6 +107,12 @@ When working on a specific subsystem, target these exact modules:
 - **Grounding & Guardrails**: `agent/grounding.py` (`GroundedRagAgent`, `check_relevance_guardrail`, `AlignmentEvaluation`)
 - **RAG Chat CLI with Task State**: `agent/rag_chat.py` (`RagTaskState`, `RagChatAgent`, `RagChatSession`), `chat_rag.py`
 
+### E. Local LLM Subsystem (llama.cpp)
+- **Local runtime**: `agent/local_llm.py` (`LocalLLMConfig`, `LocalLLMServer`, `StubLocalLLM`, `build_local_client`, `run_cli_prompt`)
+- **Scenario**: `agent/local_llm_scenarios.py` (offline stub + live llama-cli/llama-server checks)
+- **Bootstrap**: `scripts/setup_llama_cpp.sh` (build llama.cpp + download GGUF into `history/`)
+- **Chat entrypoint**: `chat_local.py`
+
 ---
 
 ## 6. Verification Cheat Sheet (Fast & Zero API Token Cost)
@@ -113,6 +120,9 @@ When working on a specific subsystem, target these exact modules:
 Run these exact commands to verify your changes without incurring API costs or waiting for network roundtrips:
 
 ```bash
+# Day 26 Local LLM (llama.cpp) verification - offline stub, no build/network
+python3 -m agent.local_llm_scenarios --offline
+
 # Day 25 RAG Chat verification
 python3 -m agent.rag_chat_scenarios --no-llm
 

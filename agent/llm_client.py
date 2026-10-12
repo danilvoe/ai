@@ -45,8 +45,13 @@ class LLMClient:
             if temperature is not None
             else self._config.get("temperature", 0.7),
         }
-        if max_tokens is not None:
-            body["max_tokens"] = max_tokens
+        # Явный лимит из аргумента; иначе — лимит по умолчанию из конфига
+        # (важно для локального llama-server с небольшим контекстом).
+        effective_max_tokens = (
+            max_tokens if max_tokens is not None else self._config.get("max_tokens")
+        )
+        if effective_max_tokens is not None:
+            body["max_tokens"] = effective_max_tokens
         request = urllib.request.Request(
             self._url,
             data=json.dumps(body).encode("utf-8"),

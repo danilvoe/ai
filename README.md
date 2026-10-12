@@ -1,4 +1,4 @@
-# Production-like Mini-Chat CLI with RAG & Task Memory (Day 24+)
+# Production-like Mini-Chat CLI with RAG & Task Memory (Day 24–26)
 
 Production-like interactive mini-chat CLI combining **Retrieval-Augmented Generation (RAG)**, **Task State Memory (`RagTaskState`)**, and **Strict Attribution with Chunk IDs and Clickable Recipe URLs**.
 
@@ -92,6 +92,78 @@ python3 -m agent.rag_chat_scenarios --limit 2
 /help                      — Display help message
 /exit                      — Exit chat and save session to disk
 ```
+
+---
+
+# Day 26: Running a Local LLM with llama.cpp
+
+Run an LLM **fully locally** on CPU with [llama.cpp](https://github.com/ggml-org/llama.cpp) — no cloud API, no keys, no network at inference time. The bootstrap script builds `llama-cli` and `llama-server` from source and downloads a small GGUF model; the scenario then proves all three acceptance criteria:
+
+1. **the model starts locally** — `llama-server` boots and answers `/health` + `/v1/models`;
+2. **it is reachable via CLI** — `llama-cli` answers a one-shot prompt;
+3. **it answers a simple request** — a question is sent over the OpenAI-compatible `/v1/chat/completions` endpoint.
+
+## Architecture
+
+| Component | Module | Responsibility |
+| --- | --- | --- |
+| **`LocalLLMConfig`** | `agent/local_llm.py` | Dataclass parsed from the `local_llm` config section: paths, host/port, context size, threads, GPU layers, timeouts |
+| **`LocalLLMServer`** | `agent/local_llm.py` | Launches `llama-server`, polls `/health` until ready, lists `/v1/models`, runs one-shot `llama-cli` prompts, stops the process cleanly |
+| **`build_local_client`** | `agent/local_llm.py` | Returns `(server, LLMClient)` so any existing agent/RAG flow can run on the local OpenAI-compatible endpoint unchanged |
+| **`StubLocalLLM`** | `agent/local_llm.py` | Deterministic offline stub (no binary/model/network) for CI verification |
+| **Scenario** | `agent/local_llm_scenarios.py` | Runs the checks, prints a report and writes `history/local_llm/report.md` + `results.json` |
+| **Chat CLI** | `chat_local.py` | Starts the local server and runs the standard agent over it (`--prompt` for a single turn) |
+| **Bootstrap** | `scripts/setup_llama_cpp.sh` | Idempotent: clones/builds llama.cpp into `history/llama.cpp` and downloads the GGUF into `history/models/` |
+
+Everything the bootstrap produces lives under `history/` (gitignored), so no binaries or model weights ever leak into Git.
+
+## Hardware profile
+
+Tested on a CPU-only host (16 threads, 46 GB RAM, no GPU): `n_gpu_layers=0`, `threads=8`, `ctx_size=8192`, `max_response_tokens=1024`. The default model is **Qwen2.5-3B-Instruct (Q4_K_M, ~2.1 GB)** — a good quality/speed balance for CPU inference.
+
+## Run
+
+```bash
+# 1. Build llama.cpp + download the model (idempotent; supports resume)
+bash scripts/setup_llama_cpp.sh
+
+# build only / download only
+bash scripts/setup_llama_cpp.sh --skip-model
+bash scripts/setup_llama_cpp.sh --skip-build
+
+# 2. Verify without build/model/network (deterministic stub)
+python3 -m agent.local_llm_scenarios --offline
+
+# 3. Verify the real local model (CLI + server + HTTP)
+python3 -m agent.local_llm_scenarios
+
+# custom prompt / port / model
+python3 -m agent.local_llm_scenarios --prompt "Назови столицу Франции" --port 8090
+
+# 4. Interactive local chat (or a single prompt)
+python3 chat_local.py
+python3 chat_local.py --prompt "Сколько будет 2+2?"
+```
+
+Example live run:
+
+```text
+✓ Бинарники llama.cpp найдены
+✓ Файл модели найден
+✓ К модели можно обратиться через CLI (llama-cli) (1031 мс)
+✓ Модель запускается локально (llama-server) (577 мс)
+✓ Модель отвечает на простой запрос (OpenAI API) (184 мс)
+  → 2+2=4 [51 токенов]
+Итог: 5/5 проверок пройдено.
+```
+
+## What was added
+
+- `agent/local_llm.py` — `LocalLLMConfig`, `LocalLLMServer` (start/wait_ready/stop, `list_models`, `complete`, `run_cli_prompt`, `client_config`/`build_client`), `build_local_client`, `StubLocalLLM`, and CLI-output cleaning.
+- `agent/local_llm_scenarios.py` — offline/live scenario validating binary discovery, model presence, CLI access, server startup, and a simple HTTP prompt; writes `history/local_llm/report.md` and `results.json`.
+- `chat_local.py` — interactive/single-turn local chat over `llama-server`.
+- `scripts/setup_llama_cpp.sh` — CPU build of `llama-cli`/`llama-server` + resumable GGUF download.
+- `config.one.json` / `config.example.json` — new `local_llm` section (`llama_dir`, `model_path`, `host`, `port`, `ctx_size`, `threads`, `n_gpu_layers`, `max_response_tokens`, `startup_timeout`, `model_label`). `chat_local.py` guards against context overflow (derives `max_context_tokens` from `ctx_size`, uses a sliding window, and supports `/clear`).
 
 ---
 
