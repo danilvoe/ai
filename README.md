@@ -95,6 +95,99 @@ python3 -m agent.rag_chat_scenarios --limit 2
 
 ---
 
+# Day 29: Local LLM Optimization for a Specific Task
+
+Optimize the **local recipe-grilling assistant** (Days 26–28) along three axes and measure the
+**before/after** trade-off across **quality, speed, and resources**:
+
+1. **Generation parameters** — `temperature`, `max_tokens`, and the context window (client-side
+   history/window **and** the `llama-server` `-c` context size), all editable **in the web UI**.
+2. **Quantization** — next to the default **Qwen2.5-3B-Instruct Q4_K_M** another, deliberately
+   weaker but lighter/faster **Q2_K** model is available as a second variant.
+3. **Prompt template for the specific case** — instead of the generic `RAG_SYSTEM_PROMPT`, a compact
+   structured recipe prompt (`Название / Ингредиенты / Приготовление`, strict citations, no meta-leak).
+
+The result is an **optimized local LLM tuned for the recipe task**: shorter, more grounded answers,
+faster CPU generation and smaller memory footprint, with a clear quality/speed/resource compromise.
+
+## Architecture
+
+| Component | Module | Responsibility |
+| --- | --- | --- |
+| **`GenerationParams`** | `agent/optimization.py` | `temperature` / `max_tokens` / `context_window` of one configuration |
+| **`ModelVariant`** | `agent/optimization.py` | One GGUF quantization (label, path, size, `tokens_per_sec`, RAM hint); measures the real file size |
+| **`PromptTemplate`** | `agent/optimization.py` | Base prompt (`baseline`) vs case-tuned recipe prompt (`recipe_structured`) |
+| **`OptimizationStubClient`** | `agent/optimization.py` | Deterministic offline client: baseline-style vs structured answers, token/speed estimates — enables zero-network checks |
+| **`compare_optimizations`** | `agent/optimization.py` | Runs several configurations over the control questions and aggregates quality / speed / resources / stability + before/after deltas |
+| **`measure_peak_rss_mb`** | `agent/optimization.py` | Peak RSS of the `llama-server` child processes (`resource.getrusage`) |
+| **Scenario** | `agent/optimization_scenarios.py` | Offline/live run, web-settings HTTP checks, `history/optimization/report.md` + `results.json` |
+| **Web settings** | `agent/web_chat.py`, `web_local.py` | UI panel for model/quantization, preset, prompt template, temperature, max tokens, context window, ctx size; `POST /api/settings` restarts `llama-server` on demand |
+
+## Run
+
+```bash
+# 0. (once) build llama.cpp + download both models (Q4_K_M + Q2_K) — see Days 26/29
+bash scripts/setup_llama_cpp.sh --quant all
+
+# 1. Deterministic offline optimization check (stub, no model, no network)
+python3 -m agent.optimization_scenarios --offline
+
+# 2. Live before/after comparison on the real local models
+python3 -m agent.optimization_scenarios
+python3 -m agent.optimization_scenarios --variant Q2_K --limit 5
+
+# 3. Web chat with the optimization panel (model + params + prompt template)
+python3 web_local.py                       # live llama-server
+python3 web_local.py --variant Q2_K        # start on the weaker quantization
+python3 web_local.py --preset optimized --temperature 0.2 --max-tokens 384
+```
+
+In the web UI a collapsible **«Параметры оптимизации»** panel exposes the model/quantization, a
+parameter preset, the prompt template, `temperature`, `max tokens`, the context window and the server
+`ctx size`. The first four are applied **per message**; **model** and **ctx size** are applied by
+restarting `llama-server` via **«Применить модель/ctx»** (`POST /api/settings`). Every requested and
+effective setting is echoed in `GET /api/status` (`variants`, `presets`, `prompt_templates`,
+`generation`, `local_variant`, `ctx_size`) and in the `/api/chat` response (`generation`,
+`prompt_template`).
+
+## What is evaluated
+
+| Axis | Metrics |
+| --- | --- |
+| **Quality** | fact coverage, citation rate, source recall@1 |
+| **Speed** | latency, generation-only latency, tokens/sec, average completion tokens |
+| **Resources** | model file size, RAM hint, peak RSS of `llama-server` |
+| **Stability** | error rate, self-consistency (Jaccard) |
+
+Retrieval is shared and local, so the differences come purely from the parameters, the prompt
+template and the quantization. In `--offline` mode the metrics come from the deterministic
+`OptimizationStubClient`; the live run produces real measurements once both GGUF files are present.
+
+Example offline run (deterministic stub):
+
+```text
+До оптимизации               факты   5.8% · ссылки  10.0% ·  10341 мс · 25.0 ток/с · 2007 МБ
+После: параметры + промпт    факты  47.5% · ссылки 100.0% ·   7681 мс · 25.0 ток/с · 2007 МБ
+После + квант Q2_K           факты  47.5% · ссылки 100.0% ·   4801 мс · 40.0 ток/с · 1150 МБ
+Дельта «после-до»: факты +41.7 п.п., ссылки +90.0 п.п., задержка -2660 мс, модель +0 МБ
+```
+
+Reports are written to `history/optimization/report.md` and `history/optimization/results.json`.
+
+## What was added
+
+- `agent/optimization.py` — `GenerationParams`, `ModelVariant`, `PromptTemplate` (+ `RECIPE_STRUCTURED_SYSTEM_PROMPT`), presets, `OptimizationStubClient`, `measure_peak_rss_mb`, `compare_optimizations`, `render_optimization_markdown`.
+- `agent/optimization_scenarios.py` — offline/live scenario, before/after comparison, web-settings HTTP checks.
+- `agent/rag.py` — `build_rag_messages(..., system_prompt=...)`.
+- `agent/local_rag.py` — `system_prompt`/`max_tokens`/`context_window` per-request overrides on `LocalRagSystem.ask_with_rag` and `timed_rag_query`.
+- `agent/agent.py` — `Agent.ask(..., temperature, max_tokens, context_window)` per-request overrides.
+- `agent/web_chat.py` — optimization state, per-message params, `POST /api/settings` (server restart), `GET /api/status`/`/api/chat` extended, UI panel.
+- `web_local.py` — `--variant`, `--preset`, `--temperature`, `--max-tokens`, `--context-window`, `--ctx-size`.
+- `scripts/setup_llama_cpp.sh` — `--quant q4_k_m|q2_k|all` and the Q2_K download.
+- `config.one.json` / `config.example.json` — `local_llm.presets`, `local_llm.variants`, new `optimization` section.
+
+---
+
 # Day 28: Fully Local RAG — Local Retrieval + Local LLM
 
 A **Retrieval-Augmented Generation system that runs entirely on the local machine**:

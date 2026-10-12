@@ -8,8 +8,8 @@ from .compression import (
     compressed_context_tokens,
     compress,
 )
-from .context import ContextStrategy
-from .conversation import Conversation, SessionStore
+from .context import ContextStrategy, SlidingWindowStrategy
+from .conversation import Conversation
 from .invariants import Invariants, parse_guard_verdict
 from .llm_client import Completion, LLMClient
 from .mcp_tools import McpToolRuntime, ToolCall, ToolResult
@@ -294,7 +294,24 @@ class Agent:
         tokens += estimate_messages_tokens(self._task_messages())
         return tokens
 
-    def ask(self, user_request: str) -> Completion:
+    def ask(
+        self,
+        user_request: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        context_window: int | None = None,
+    ) -> Completion:
+        """Отправляет запрос в модель.
+
+        ``temperature``/``max_tokens`` (День 29) переопределяют параметры
+        генерации на один запрос; ``context_window`` меняет размер скользящего
+        окна истории (если активна :class:`~agent.context.SlidingWindowStrategy`).
+        При ``None`` поведение прежнее.
+        """
+        if context_window is not None and isinstance(
+            self._context_strategy, SlidingWindowStrategy
+        ):
+            self._context_strategy.size = max(1, int(context_window))
         # Контекст, который реально уйдёт в модель, зависит от сжатия.
         context_messages = self.context_messages
         history_tokens = self.context_tokens
@@ -326,7 +343,9 @@ class Agent:
             return reply
 
         try:
-            reply = self._client.complete(context_messages)
+            reply = self._client.complete(
+                context_messages, temperature=temperature, max_tokens=max_tokens
+            )
         except Exception:
             self._conversation.pop_last()
             raise

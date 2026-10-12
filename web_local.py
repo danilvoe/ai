@@ -33,6 +33,7 @@ import webbrowser
 
 from agent.config import load_config
 from agent.local_llm import LocalLLMError
+from agent.optimization import find_variant, parse_variants
 from agent.web_chat import WebChatBackend, create_app
 
 
@@ -58,6 +59,18 @@ def main() -> int:
     )
     parser.add_argument("--top-k", type=int, default=None, help="Число источников в контексте")
     parser.add_argument("--index-dir", default=None, help="Каталог FAISS-индексов")
+    parser.add_argument(
+        "--variant", default=None, help="Вариант локальной модели (квантование), напр. Q2_K"
+    )
+    parser.add_argument(
+        "--preset", default=None, help="Пресет параметров генерации (baseline/optimized)"
+    )
+    parser.add_argument("--temperature", type=float, default=None, help="Temperature")
+    parser.add_argument("--max-tokens", type=int, default=None, help="Лимит токенов ответа")
+    parser.add_argument(
+        "--context-window", type=int, default=None, help="Окно контекста (число сообщений)"
+    )
+    parser.add_argument("--ctx-size", type=int, default=None, help="Размер контекста llama-server (-c)")
     parser.add_argument("--no-browser", action="store_true", help="Не открывать браузер")
     args = parser.parse_args()
 
@@ -65,6 +78,27 @@ def main() -> int:
     section = config.get("web_chat", {}) or {}
     host = args.host or section.get("host", "127.0.0.1")
     port = args.port or int(section.get("port", 8000))
+
+    # День 29: начальные настройки оптимизации из CLI.
+    if args.variant:
+        variant = find_variant(parse_variants(config), args.variant)
+        if variant is None:
+            print(f"✗ Неизвестный вариант модели: {args.variant}", file=sys.stderr)
+            return 1
+        config.setdefault("local_llm", {})["model_path"] = variant.model_path
+        config["local_llm"]["model_label"] = variant.label
+        if variant.ctx_size and not args.ctx_size:
+            config["local_llm"]["ctx_size"] = variant.ctx_size
+    if args.ctx_size:
+        config.setdefault("local_llm", {})["ctx_size"] = args.ctx_size
+    if args.max_tokens is not None:
+        config.setdefault("local_llm", {})["max_response_tokens"] = args.max_tokens
+    if args.temperature is not None:
+        config.setdefault("local_rag", {})["temperature"] = args.temperature
+    if args.context_window is not None:
+        config.setdefault("web_chat", {})["window_size"] = args.context_window
+    if args.preset:
+        config.setdefault("optimization", {})["default_preset"] = args.preset
 
     if args.dataset or args.strategy or args.top_k:
         rag_section = config.setdefault("local_rag", {})
@@ -116,6 +150,13 @@ def main() -> int:
         )
     else:
         print(f"⚠ RAG недоступен: {backend.rag_error or 'возможность отключена'}")
+    gen = backend.generation_params.to_dict()
+    print(
+        f"✓ Оптимизация: вариант {backend.local_variant_label or '—'}, "
+        f"промпт {backend.prompt_template_label}, ctx {backend.ctx_size}, "
+        f"temperature {gen['temperature']}, max_tokens {gen['max_tokens']} "
+        f"(настраивается в UI)"
+    )
     print(f"✓ Веб-чат: {url}")
     print("Остановка — Ctrl+C.\n")
 

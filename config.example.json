@@ -140,7 +140,31 @@
     "n_gpu_layers": 0,
     "max_response_tokens": 1024,
     "startup_timeout": 120,
-    "model_label": "local-llm"
+    "model_label": "local-llm",
+    "presets": {
+      "baseline": {"temperature": 0.7, "max_tokens": 1024, "context_window": 8},
+      "optimized": {"temperature": 0.2, "max_tokens": 384, "context_window": 6}
+    },
+    "variants": [
+      {
+        "label": "Q4_K_M",
+        "quantization": "Q4_K_M",
+        "model_path": "history/models/qwen2.5-3b-instruct-q4_k_m.gguf",
+        "size_mb": 2100,
+        "tokens_per_sec": 25,
+        "ram_mb": 2600,
+        "ctx_size": 8192
+      },
+      {
+        "label": "Q2_K",
+        "quantization": "Q2_K",
+        "model_path": "history/models/qwen2.5-3b-instruct-q2_k.gguf",
+        "size_mb": 1150,
+        "tokens_per_sec": 40,
+        "ram_mb": 1600,
+        "ctx_size": 8192
+      }
+    ]
   },
   "web_chat": {
     "host": "127.0.0.1",
@@ -162,6 +186,36 @@
     "category_suggestions": 5,
     "repeats": 2,
     "report_dir": "history/local_rag"
+  },
+  "optimization": {
+    "enabled": true,
+    "repeats": 2,
+    "default_preset": "",
+    "default_prompt_template": "baseline",
+    "report_dir": "history/optimization",
+    "configurations": [
+      {
+        "name": "baseline",
+        "label": "До оптимизации",
+        "preset": "baseline",
+        "prompt_template": "baseline",
+        "variant": "Q4_K_M"
+      },
+      {
+        "name": "optimized",
+        "label": "После: параметры + промпт",
+        "preset": "optimized",
+        "prompt_template": "recipe_structured",
+        "variant": "Q4_K_M"
+      },
+      {
+        "name": "quantized",
+        "label": "После + квант Q2_K",
+        "preset": "optimized",
+        "prompt_template": "recipe_structured",
+        "variant": "Q2_K"
+      }
+    ]
   },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,

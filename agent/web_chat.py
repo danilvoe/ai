@@ -45,6 +45,15 @@ from .local_rag import (
     DEFAULT_RELEVANCE_THRESHOLD,
     LocalRagSystem,
 )
+from .optimization import (
+    GenerationParams,
+    ModelVariant,
+    PROMPT_TEMPLATES,
+    find_template,
+    find_variant,
+    parse_presets,
+    parse_variants,
+)
 from .rag import RagRetriever, RagSource, load_retriever
 from .tokens import ContextOverflowError
 
@@ -53,6 +62,11 @@ DEFAULT_MAX_SESSIONS = 64
 DEFAULT_TOP_K = 5
 DEFAULT_TEMPERATURE = 0.2
 DEFAULT_MAX_CONTEXT_CHARS = 6000
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    """Ограничивает значение диапазоном ``[low, high]``."""
+    return max(low, min(high, float(value)))
 
 
 class RagUnavailableError(RuntimeError):
@@ -180,14 +194,23 @@ class ChatSession:
         return list(self._channels)
 
     def ask(
-        self, message: str, use_rag: bool = False, model_source: str = "local"
+        self,
+        message: str,
+        use_rag: bool = False,
+        model_source: str = "local",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        context_window: int | None = None,
+        system_prompt: str | None = None,
     ) -> ChatReply:
         """Отправляет сообщение в выбранную модель и возвращает ответ.
 
         ``model_source`` выбирает канал («local»/«cloud»), ``use_rag=True``
         включает поиск по базе рецептов; иначе вызывается обычный агент, и
-        retrieval не задействуется вовсе. Оба режима пишут диалог в общую
-        историю сессии.
+        retrieval не задействуется вовсе. ``temperature``/``max_tokens``/
+        ``context_window`` (День 29) переопределяют параметры генерации на один
+        запрос, ``system_prompt`` — prompt-шаблон под кейс. Оба режима пишут
+        диалог в общую историю сессии.
         """
         with self._lock:
             channel = self._channels.get(model_source)
@@ -199,7 +222,14 @@ class ChatSession:
                 if channel.rag_system is None:
                     raise RagUnavailableError("RAG (рецепты) недоступен")
                 history = self._conversation.recent_messages[-(self._history_window):]
-                answer = channel.rag_system.ask_with_rag(message, history=history)
+                answer = channel.rag_system.ask_with_rag(
+                    message,
+                    history=history,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    context_window=context_window,
+                    system_prompt=system_prompt,
+                )
                 if answer.error:
                     raise RuntimeError(answer.error)
                 # Фиксируем ход в истории, чтобы он сохранился и попал в
@@ -221,7 +251,12 @@ class ChatSession:
                     sources=[s.to_dict() for s in answer.sources],
                     model_source=model_source,
                 )
-            reply = channel.agent.ask(message)
+            reply = channel.agent.ask(
+                message,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                context_window=context_window,
+            )
             return ChatReply(
                 content=reply.content, model=reply.model, model_source=model_source
             )
@@ -310,6 +345,27 @@ class WebChatBackend:
         self._category_suggestions = max(
             1, int(rag_section.get("category_suggestions", DEFAULT_CATEGORY_SUGGESTIONS))
         )
+        # День 29: параметры оптимизации — пресеты, варианты (квантование) и
+        # prompt-шаблоны. Текущий выбор хранится как состояние бэкенда и
+        # переопределяется на каждое сообщение из веб-интерфейса.
+        opt_section = (config or {}).get("optimization", {}) or {}
+        self._presets = parse_presets(config)
+        self._variants = parse_variants(config)
+        self._templates = dict(PROMPT_TEMPLATES)
+        default_preset = str(opt_section.get("default_preset", "") or "")
+        preset = self._presets.get(default_preset) if default_preset else None
+        self._params = preset or GenerationParams(
+            temperature=self._temperature,
+            max_tokens=self.local.max_response_tokens,
+            context_window=self._window_size,
+        )
+        self._preset_name = default_preset if preset else "custom"
+        self._current_variant = self._match_variant(self.local.model_path) or find_variant(
+            self._variants, None
+        )
+        self._template = find_template(
+            opt_section.get("default_prompt_template", "baseline")
+        )
         self._retriever = retriever
         # RAG-возможность: включена по умолчанию (`enable_rag`), флаг `rag`
         # оставлен для обратной совместимости, явный retriever тоже включает её.
@@ -376,6 +432,55 @@ class WebChatBackend:
         if self.cloud_enabled:
             sources.append("cloud")
         return sources
+
+    @property
+    def variants(self) -> list[ModelVariant]:
+        """Доступные варианты локальной модели (квантования)."""
+        return list(self._variants)
+
+    @property
+    def presets(self) -> dict[str, GenerationParams]:
+        """Именованные пресеты параметров генерации."""
+        return dict(self._presets)
+
+    @property
+    def prompt_templates(self) -> dict:
+        """Доступные prompt-шаблоны (имя → :class:`PromptTemplate`)."""
+        return dict(self._templates)
+
+    @property
+    def local_variant_label(self) -> str:
+        """Метка выбранного варианта локальной модели (квантования)."""
+        return self._current_variant.label if self._current_variant else ""
+
+    @property
+    def prompt_template_label(self) -> str:
+        """Имя активного prompt-шаблона."""
+        return self._template.name
+
+    @property
+    def generation_params(self) -> GenerationParams:
+        """Текущие параметры генерации по умолчанию."""
+        return self._params
+
+    @property
+    def ctx_size(self) -> int:
+        """Размер контекста llama-server (``-c``)."""
+        return int(self.local.ctx_size)
+
+    def _match_variant(self, model_path: str | None) -> ModelVariant | None:
+        """Находит вариант модели по пути (полному или по имени файла)."""
+        if not model_path:
+            return None
+        norm = str(model_path).replace("\\", "/")
+        for variant in self._variants:
+            if variant.model_path.replace("\\", "/") == norm:
+                return variant
+        target_name = Path(norm).name
+        for variant in self._variants:
+            if variant.path.name == target_name:
+                return variant
+        return None
 
     @property
     def endpoint(self) -> str:
@@ -453,6 +558,20 @@ class WebChatBackend:
             "endpoint": self.endpoint,
             "sessions": len(self._sessions),
             "rag": self.rag_enabled,
+            # День 29: состояние оптимизации для веб-интерфейса.
+            "ctx_size": self.ctx_size,
+            "threads": int(self.local.threads),
+            "local_variant": self.local_variant_label,
+            "prompt_template": self.prompt_template_label,
+            "generation": self._params.to_dict(),
+            "preset": self._preset_name,
+            "presets": {
+                name: params.to_dict() for name, params in self._presets.items()
+            },
+            "variants": [v.to_dict() for v in self._variants],
+            "prompt_templates": {
+                name: template.to_dict() for name, template in self._templates.items()
+            },
         }
         if self.rag_enabled:
             result["dataset"] = self._retriever.index.metadata.get("source", "unknown")
@@ -461,6 +580,54 @@ class WebChatBackend:
         elif self._rag_error:
             result["rag_error"] = self._rag_error
         return result
+
+    def configure(
+        self,
+        ctx_size: int | None = None,
+        variant: str | None = None,
+    ) -> dict:
+        """Применяет настройки уровня сервера (День 29).
+
+        ``ctx_size`` меняет размер контекста llama-server (``-c``), ``variant`` —
+        выбранное квантование (GGUF-модель). В живом режиме локальный сервер
+        перезапускается с новыми параметрами, а сессии пересобираются на новом
+        клиенте (история диалога при этом сохраняется на диске). В офлайне
+        обновляются только метки.
+        """
+        changed = False
+        if variant is not None:
+            matched = find_variant(self._variants, variant)
+            if matched is None:
+                raise ValueError(f"Неизвестный вариант модели: {variant}")
+            if not matched.available() and not self.offline and not self._injected_client:
+                raise ValueError(
+                    f"Файл модели варианта «{matched.label}» не найден: {matched.path}"
+                )
+            self._current_variant = matched
+            if not self._injected_client and matched.model_path:
+                self.local.model_path = matched.model_path
+            if matched.ctx_size and ctx_size is None:
+                self.local.ctx_size = int(matched.ctx_size)
+            changed = True
+        if ctx_size is not None:
+            self.local.ctx_size = max(256, int(ctx_size))
+            changed = True
+
+        if changed and not self.offline and not self._injected_client:
+            self._restart_local_server()
+        elif changed and self.offline and not self._injected_client:
+            self._client = StubLLMClient(f"{self.local.model_label}-stub")
+        return self.status()
+
+    def _restart_local_server(self) -> None:
+        """Перезапускает llama-server с текущими настройками и пересобирает сессии."""
+        self.stop()
+        self._server = LocalLLMServer(self.local)
+        self._server.start()
+        self._client = self._server.build_client()
+        self._max_context_tokens = self._server.max_context_tokens
+        with self._lock:
+            self._sessions.clear()
 
     def _build_channel(
         self,
@@ -491,6 +658,9 @@ class WebChatBackend:
                 generic_threshold=self._generic_threshold,
                 generic_min_sources=self._generic_min_sources,
                 category_suggestions=self._category_suggestions,
+                # День 29: шаблон под кейс и лимит токенов по умолчанию.
+                system_prompt=self._template.system_prompt,
+                max_tokens=self._params.max_tokens,
             )
         return ChatChannel(agent=agent, rag_system=rag_system, label=label)
 
@@ -536,6 +706,11 @@ class WebChatBackend:
         session_id: str | None = None,
         use_rag: bool = False,
         model_source: str = "local",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        context_window: int | None = None,
+        preset: str | None = None,
+        prompt_template: str | None = None,
     ) -> dict:
         """Отправляет сообщение в выбранную модель и возвращает ответ.
 
@@ -543,8 +718,13 @@ class WebChatBackend:
         ``use_rag=True`` включает поиск по базе рецептов (режим «рецепты»). Если
         источник или RAG недоступны, поднимается
         :class:`ModelSourceUnavailableError` / :class:`RagUnavailableError`.
-        Возвращает словарь
-        ``{session_id, reply, model, model_source, sources, used_rag, rag_available}``.
+
+        День 29: ``preset`` выбирает именованный пресет параметров, а
+        ``temperature``/``max_tokens``/``context_window`` переопределяют отдельные
+        параметры поверх него; ``prompt_template`` выбирает prompt-шаблон под
+        кейс. Возвращает словарь
+        ``{session_id, reply, model, model_source, sources, used_rag,
+        rag_available, generation, prompt_template}``.
         """
         if not self.ready:
             raise RuntimeError("Бэкенд не запущен: вызовите start() перед запросами.")
@@ -555,8 +735,42 @@ class WebChatBackend:
         if use_rag and not self.rag_enabled:
             reason = self._rag_error or "индекс рецептов не загружен"
             raise RagUnavailableError(f"RAG (рецепты) недоступен: {reason}")
+
+        params = self._presets.get(preset) if preset else self._params
+        if params is None:
+            params = self._params
+        if temperature is not None or max_tokens is not None or context_window is not None:
+            params = GenerationParams(
+                temperature=(
+                    params.temperature if temperature is None else _clamp(temperature, 0.0, 2.0)
+                ),
+                max_tokens=(
+                    params.max_tokens
+                    if max_tokens is None
+                    else max(1, int(max_tokens))
+                ),
+                context_window=(
+                    params.context_window
+                    if context_window is None
+                    else max(1, int(context_window))
+                ),
+            )
+        template = (
+            self._templates.get(prompt_template, self._template)
+            if prompt_template
+            else self._template
+        )
+
         session = self._get_session(session_id)
-        reply = session.ask(message, use_rag=use_rag, model_source=model_source)
+        reply = session.ask(
+            message,
+            use_rag=use_rag,
+            model_source=model_source,
+            temperature=params.temperature,
+            max_tokens=params.max_tokens,
+            context_window=params.context_window,
+            system_prompt=template.system_prompt,
+        )
         return {
             "session_id": session.session_id,
             "reply": reply.content,
@@ -565,6 +779,8 @@ class WebChatBackend:
             "sources": reply.sources,
             "used_rag": bool(use_rag and self.rag_enabled),
             "rag_available": self.rag_enabled,
+            "generation": params.to_dict(),
+            "prompt_template": template.name,
         }
 
     def reset(self, session_id: str | None) -> str:
@@ -643,6 +859,20 @@ HTML_PAGE = """<!DOCTYPE html>
   }
   button.ghost { background: #1b1f2a; border: 1px solid #2c3140; font-weight: 400; }
   button:disabled { opacity: .5; cursor: not-allowed; }
+  .opts { border-bottom: 1px solid #232734; padding: 8px 18px;
+          font-size: 13px; color: #aab2c8; }
+  .opts summary { cursor: pointer; color: #8b93a7; font-size: 13px; }
+  .opts .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end;
+               margin-top: 10px; }
+  .opts label { display: flex; flex-direction: column; gap: 3px;
+                font-size: 11px; color: #8b93a7; }
+  .opts input, .opts select {
+    height: 30px; padding: 0 8px; border-radius: 8px; border: 1px solid #2c3140;
+    background: #151924; color: inherit; font: inherit;
+  }
+  .opts input:focus, .opts select:focus { outline: none; border-color: #2b5cff; }
+  .opts button { height: 30px; padding: 0 12px; font-size: 12px; }
+  .opts .hint { color: #6b7285; font-size: 11px; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -652,6 +882,38 @@ HTML_PAGE = """<!DOCTYPE html>
   <span style="flex:1"></span>
   <button class="ghost" id="reset" type="button">Очистить</button>
 </header>
+<details class="opts" id="opt-panel">
+  <summary>Параметры оптимизации локальной LLM (День 29)</summary>
+  <div class="row">
+    <label>Модель (квантование)
+      <select id="variant"></select>
+    </label>
+    <label>Пресет
+      <select id="preset"><option value="">свой</option></select>
+    </label>
+    <label>Prompt-шаблон
+      <select id="template">
+        <option value="baseline">базовый</option>
+        <option value="recipe_structured">структурированный рецепт</option>
+      </select>
+    </label>
+    <label>Temperature
+      <input id="temperature" type="number" min="0" max="2" step="0.05" value="0.2">
+    </label>
+    <label>Max tokens
+      <input id="max_tokens" type="number" min="1" step="64" value="512">
+    </label>
+    <label>Окно контекста (сообщений)
+      <input id="context_window" type="number" min="1" step="1" value="8">
+    </label>
+    <label>Ctx сервера (-c)
+      <input id="ctx_size" type="number" min="256" step="256" value="8192">
+    </label>
+    <button class="ghost" id="apply-settings" type="button">Применить модель/ctx</button>
+  </div>
+  <div class="hint">Модель и размер контекста применяются перезапуском
+    llama-server; temperature, max tokens, окно и шаблон — на каждое сообщение.</div>
+</details>
 <main id="log"></main>
 <footer>
   <form id="form">
@@ -677,10 +939,56 @@ HTML_PAGE = """<!DOCTYPE html>
   const dot = document.getElementById('dot');
   const modeEl = document.getElementById('mode');
   const sourceEl = document.getElementById('source');
+  const variantEl = document.getElementById('variant');
+  const presetEl = document.getElementById('preset');
+  const templateEl = document.getElementById('template');
+  const temperatureEl = document.getElementById('temperature');
+  const maxTokensEl = document.getElementById('max_tokens');
+  const contextWindowEl = document.getElementById('context_window');
+  const ctxSizeEl = document.getElementById('ctx_size');
+  const applyBtn = document.getElementById('apply-settings');
   const HISTORY_KEY = 'llm_chat_session';
   const MODE_KEY = 'llm_chat_mode';
   const SOURCE_KEY = 'llm_chat_source';
+  const VARIANT_KEY = 'llm_chat_variant';
+  const PRESET_KEY = 'llm_chat_preset';
+  const TEMPLATE_KEY = 'llm_chat_template';
+  const TEMPERATURE_KEY = 'llm_chat_temperature';
+  const MAXTOK_KEY = 'llm_chat_max_tokens';
+  const CTXWIN_KEY = 'llm_chat_context_window';
+  const CTXSIZE_KEY = 'llm_chat_ctx_size';
   let sessionId = localStorage.getItem(HISTORY_KEY);
+  let PRESETS = {};
+
+  function optParams() {
+    return {
+      temperature: parseFloat(temperatureEl.value),
+      max_tokens: parseInt(maxTokensEl.value, 10) || undefined,
+      context_window: parseInt(contextWindowEl.value, 10) || undefined,
+      preset: presetEl.value || undefined,
+      prompt_template: templateEl.value || undefined,
+    };
+  }
+
+  function persistOpts() {
+    localStorage.setItem(TEMPERATURE_KEY, temperatureEl.value);
+    localStorage.setItem(MAXTOK_KEY, maxTokensEl.value);
+    localStorage.setItem(CTXWIN_KEY, contextWindowEl.value);
+    localStorage.setItem(CTXSIZE_KEY, ctxSizeEl.value);
+    localStorage.setItem(VARIANT_KEY, variantEl.value);
+    localStorage.setItem(PRESET_KEY, presetEl.value);
+    localStorage.setItem(TEMPLATE_KEY, templateEl.value);
+  }
+
+  function restoreOpts() {
+    [[temperatureEl, TEMPERATURE_KEY], [maxTokensEl, MAXTOK_KEY],
+     [contextWindowEl, CTXWIN_KEY], [ctxSizeEl, CTXSIZE_KEY]].forEach(([el, key]) => {
+      const v = localStorage.getItem(key);
+      if (v !== null) el.value = v;
+    });
+    const tmpl = localStorage.getItem(TEMPLATE_KEY);
+    if (tmpl) templateEl.value = tmpl;
+  }
 
   function add(role, text) {
     const wrap = document.createElement('div');
@@ -789,6 +1097,46 @@ HTML_PAGE = """<!DOCTYPE html>
       if (!mode) mode = s.rag ? 'rag' : 'off';
       if (mode === 'rag' && !s.rag) mode = 'off';
       modeEl.value = mode;
+
+      // День 29: варианты модели (квантование), пресеты и prompt-шаблоны.
+      PRESETS = s.presets || {};
+      variantEl.innerHTML = '';
+      (s.variants || []).forEach((v) => {
+        const o = document.createElement('option');
+        o.value = v.label;
+        o.textContent = v.label + ' · ' + (v.size_mb ? v.size_mb + ' МБ' : '—')
+          + (v.available ? '' : ' (нет файла)');
+        variantEl.appendChild(o);
+      });
+      let savedVariant = localStorage.getItem(VARIANT_KEY);
+      if (savedVariant && [...variantEl.options].some((o) => o.value === savedVariant)) {
+        variantEl.value = savedVariant;
+      } else if (s.local_variant) {
+        variantEl.value = s.local_variant;
+      }
+      presetEl.innerHTML = '<option value="">свой</option>';
+      Object.entries(PRESETS).forEach(([name, p]) => {
+        const o = document.createElement('option');
+        o.value = name;
+        o.textContent = name + ' (t=' + p.temperature + ', ' + p.max_tokens + ' ток.)';
+        presetEl.appendChild(o);
+      });
+      const savedPreset = localStorage.getItem(PRESET_KEY);
+      if (savedPreset) presetEl.value = savedPreset;
+      else if (s.preset && s.preset !== 'custom') presetEl.value = s.preset;
+
+      restoreOpts();
+      if (localStorage.getItem(TEMPERATURE_KEY) === null && s.generation) {
+        temperatureEl.value = s.generation.temperature;
+        maxTokensEl.value = s.generation.max_tokens;
+        contextWindowEl.value = s.generation.context_window;
+      }
+      if (localStorage.getItem(CTXSIZE_KEY) === null && s.ctx_size) {
+        ctxSizeEl.value = s.ctx_size;
+      }
+      if (localStorage.getItem(TEMPLATE_KEY) === null && s.prompt_template) {
+        templateEl.value = s.prompt_template;
+      }
     } catch (e) {
       statusEl.textContent = 'нет связи';
     }
@@ -806,12 +1154,12 @@ HTML_PAGE = """<!DOCTYPE html>
       const r = await fetch('api/chat', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
+        body: JSON.stringify(Object.assign({
           session_id: sessionId,
           message: text,
           use_rag: modeEl.value === 'rag',
           model_source: sourceEl.value,
-        }),
+        }, optParams())),
       });
       const data = await r.json();
       if (!r.ok) {
@@ -852,6 +1200,47 @@ HTML_PAGE = """<!DOCTYPE html>
 
   sourceEl.addEventListener('change', () => {
     localStorage.setItem(SOURCE_KEY, sourceEl.value);
+  });
+
+  [temperatureEl, maxTokensEl, contextWindowEl, ctxSizeEl, variantEl,
+   templateEl].forEach((el) => {
+    el.addEventListener('change', persistOpts);
+  });
+
+  presetEl.addEventListener('change', () => {
+    const p = PRESETS[presetEl.value];
+    if (p) {
+      temperatureEl.value = p.temperature;
+      maxTokensEl.value = p.max_tokens;
+      contextWindowEl.value = p.context_window;
+    }
+    persistOpts();
+  });
+
+  applyBtn.addEventListener('click', async () => {
+    applyBtn.disabled = true;
+    try {
+      const r = await fetch('api/settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          ctx_size: parseInt(ctxSizeEl.value, 10) || undefined,
+          variant: variantEl.value || undefined,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        add('system', '⚠️ ' + (data.error || ('HTTP ' + r.status)));
+      } else {
+        add('system', 'Настройки применены: модель ' + (data.local_variant || '—')
+          + ', ctx ' + data.ctx_size + ', потоки ' + data.threads + '.');
+      }
+      persistOpts();
+    } catch (err) {
+      add('system', '⚠️ Ошибка соединения: ' + err);
+    } finally {
+      applyBtn.disabled = false;
+    }
   });
 
   loadStatus();
@@ -908,7 +1297,22 @@ def create_app(backend: WebChatBackend) -> Flask:
             )
         try:
             result = backend.chat(
-                message, session_id, use_rag=use_rag, model_source=model_source
+                message,
+                session_id,
+                use_rag=use_rag,
+                model_source=model_source,
+                temperature=data.get("temperature"),
+                max_tokens=data.get("max_tokens"),
+                context_window=data.get("context_window"),
+                preset=data.get("preset"),
+                prompt_template=data.get("prompt_template"),
+            )
+        except (TypeError, ValueError) as exc:
+            return (
+                jsonify(
+                    {"error": f"Некорректные параметры: {exc}", "session_id": session_id}
+                ),
+                400,
             )
         except ContextOverflowError:
             return (
@@ -924,6 +1328,23 @@ def create_app(backend: WebChatBackend) -> Flask:
             return jsonify({"error": str(exc), "session_id": session_id}), 400
         except Exception as exc:  # noqa: BLE001 — понятная ошибка модели
             return jsonify({"error": f"Ошибка модели: {exc}"}), 502
+        return jsonify(result)
+
+    @app.post("/api/settings")
+    def settings():
+        """Применяет настройки уровня сервера (День 29): ``ctx_size``/``variant``."""
+        data = request.get_json(silent=True) or {}
+        ctx_size = data.get("ctx_size")
+        variant = data.get("variant")
+        try:
+            result = backend.configure(
+                ctx_size=int(ctx_size) if ctx_size is not None else None,
+                variant=str(variant) if variant else None,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:  # noqa: BLE001 — перезапуск сервера мог упасть
+            return jsonify({"error": f"Ошибка применения настроек: {exc}"}), 502
         return jsonify(result)
 
     @app.post("/api/reset")

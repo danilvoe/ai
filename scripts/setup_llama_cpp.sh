@@ -6,7 +6,9 @@
 #
 # Usage:
 #   bash scripts/setup_llama_cpp.sh
-#   bash scripts/setup_llama_cpp.sh --skip-build     # only download the model
+#   bash scripts/setup_llama_cpp.sh --quant all      # Q4_K_M + Q2_K (Day 29)
+#   bash scripts/setup_llama_cpp.sh --quant q2_k     # only the weaker Q2_K
+#   bash scripts/setup_llama_cpp.sh --skip-build     # only download the model(s)
 #   bash scripts/setup_llama_cpp.sh --skip-model     # only build llama.cpp
 #   LLAMA_DIR=/opt/llama.cpp MODEL_DIR=/opt/models bash scripts/setup_llama_cpp.sh
 #
@@ -14,6 +16,7 @@
 #   llama-cli    -> history/llama.cpp/build/bin/llama-cli
 #   llama-server -> history/llama.cpp/build/bin/llama-server
 #   model        -> history/models/qwen2.5-3b-instruct-q4_k_m.gguf
+#   model (Q2)   -> history/models/qwen2.5-3b-instruct-q2_k.gguf   (--quant q2_k|all)
 
 set -euo pipefail
 
@@ -22,26 +25,36 @@ LLAMA_DIR="${LLAMA_DIR:-$ROOT/history/llama.cpp}"
 MODEL_DIR="${MODEL_DIR:-$ROOT/history/models}"
 MODEL_FILE="${MODEL_FILE:-qwen2.5-3b-instruct-q4_k_m.gguf}"
 MODEL_URL="${MODEL_URL:-https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf}"
+# Второй вариант — более слабое квантование Q2_K для Дня 29 (оптимизация/сравнение).
+MODEL2_FILE="${MODEL2_FILE:-qwen2.5-3b-instruct-q2_k.gguf}"
+MODEL2_URL="${MODEL2_URL:-https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q2_k.gguf}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 
 SKIP_BUILD=0
 SKIP_MODEL=0
+QUANT="q4_k_m"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1 ;;
     --skip-model) SKIP_MODEL=1 ;;
+    --quant)      QUANT="$2"; shift ;;
     --llama-dir)  LLAMA_DIR="$2"; shift ;;
     --model-dir)  MODEL_DIR="$2"; shift ;;
     --jobs)       JOBS="$2"; shift ;;
     -h|--help)
-      grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -30
+      grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -40
       exit 0
       ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+case "$QUANT" in
+  q4_k_m|q2_k|all) ;;
+  *) echo "Invalid --quant '$QUANT' (use q4_k_m, q2_k or all)" >&2; exit 2 ;;
+esac
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
@@ -83,7 +96,8 @@ build_llama_cpp() {
 }
 
 download_model() {
-  local target="$MODEL_DIR/$MODEL_FILE"
+  local file="$1" url="$2"
+  local target="$MODEL_DIR/$file"
   if [[ -s "$target" ]]; then
     if [[ "$(head -c 4 "$target")" == "GGUF" ]]; then
       log "Model already present: $target"
@@ -96,12 +110,12 @@ download_model() {
   log "Downloading model -> $target"
   if command -v curl >/dev/null 2>&1; then
     # -C - resumes a partially downloaded file (idempotent reruns).
-    if ! curl -L --fail --progress-bar -C - "$MODEL_URL" -o "$target.part"; then
+    if ! curl -L --fail --progress-bar -C - "$url" -o "$target.part"; then
       echo "Download failed (curl). Partial file kept: $target.part" >&2
       exit 1
     fi
   elif command -v wget >/dev/null 2>&1; then
-    if ! wget -c -O "$target.part" "$MODEL_URL"; then
+    if ! wget -c -O "$target.part" "$url"; then
       echo "Download failed (wget). Partial file kept: $target.part" >&2
       exit 1
     fi
@@ -124,7 +138,12 @@ else
   log "Skipping llama.cpp build (--skip-build)"
 fi
 if [[ "$SKIP_MODEL" -eq 0 ]]; then
-  download_model
+  if [[ "$QUANT" == "q4_k_m" || "$QUANT" == "all" ]]; then
+    download_model "$MODEL_FILE" "$MODEL_URL"
+  fi
+  if [[ "$QUANT" == "q2_k" || "$QUANT" == "all" ]]; then
+    download_model "$MODEL2_FILE" "$MODEL2_URL"
+  fi
 else
   log "Skipping model download (--skip-model)"
 fi
@@ -132,4 +151,5 @@ fi
 log "Done. Run:"
 echo "  python3 -m agent.local_llm_scenarios --offline   # deterministic check"
 echo "  python3 -m agent.local_llm_scenarios             # real local LLM check"
+echo "  python3 -m agent.optimization_scenarios --offline # Day 29 optimization check"
 echo "  python3 chat_local.py                            # interactive chat"

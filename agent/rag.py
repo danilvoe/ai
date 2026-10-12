@@ -187,6 +187,7 @@ def build_rag_messages(
     max_chars: int = 6000,
     history: list[dict[str, str]] | None = None,
     extra_instruction: str | None = None,
+    system_prompt: str | None = None,
 ) -> list[dict[str, str]]:
     """Формирует список сообщений (messages) для RAG-запроса.
 
@@ -194,7 +195,10 @@ def build_rag_messages(
     вставляются между system-сообщением и текущим вопросом, чтобы модель
     учитывала контекст беседы. ``extra_instruction`` — дополнительная инструкция,
     добавляемая к пользовательскому сообщению (например, для общих вопросов).
-    По умолчанию ни история, ни доп. инструкция не передаются.
+    ``system_prompt`` — переопределение системного промпта (по умолчанию
+    используется :data:`RAG_SYSTEM_PROMPT`; День 29 подставляет свой шаблон под
+    конкретный кейс). По умолчанию ни история, ни доп. инструкция, ни системный
+    промпт не передаются.
     """
     retriever_dummy = RagRetriever(index=None, top_k=len(sources))  # type: ignore[arg-type]
     context_text = retriever_dummy.build_context(sources, max_chars=max_chars)
@@ -211,7 +215,9 @@ def build_rag_messages(
     if extra_instruction:
         user_content = f"{user_content}\n\n{extra_instruction}"
 
-    messages: list[dict[str, str]] = [{"role": "system", "content": RAG_SYSTEM_PROMPT}]
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_prompt or RAG_SYSTEM_PROMPT}
+    ]
     for item in history or []:
         role = item.get("role")
         content = item.get("content")

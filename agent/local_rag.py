@@ -693,6 +693,8 @@ class LocalRagSystem:
         generic_threshold: float = DEFAULT_GENERIC_THRESHOLD,
         generic_min_sources: int = DEFAULT_GENERIC_MIN_SOURCES,
         category_suggestions: int = DEFAULT_CATEGORY_SUGGESTIONS,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         self.client = client
         self.retriever = retriever
@@ -706,6 +708,10 @@ class LocalRagSystem:
         self.generic_threshold = float(generic_threshold)
         self.generic_min_sources = max(1, int(generic_min_sources))
         self.category_suggestions = max(1, int(category_suggestions))
+        # День 29: переопределяемый системный промпт (шаблон под кейс) и лимит
+        # токенов ответа. По умолчанию — как в Днях 22–28.
+        self.system_prompt = system_prompt
+        self.max_tokens = max_tokens
 
     @property
     def total_vectors(self) -> int:
@@ -721,21 +727,40 @@ class LocalRagSystem:
         question: str,
         top_k: int | None = None,
         history: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        context_window: int | None = None,
+        system_prompt: str | None = None,
     ) -> RagAnswer:
+        """RAG-запрос с опциональным переопределением параметров генерации.
+
+        ``temperature``/``max_tokens``/``context_window``/``system_prompt``
+        (День 29) позволяют менять параметры и prompt-шаблон на каждый запрос из
+        веб-интерфейса, не пересоздавая систему. При ``None`` используются
+        значения из конфигурации системы.
+        """
         result = timed_rag_query(
             client=self.client,
             retriever=self.retriever,
             question=question,
             top_k=top_k or self.top_k,
-            temperature=self.temperature,
+            temperature=self.temperature if temperature is None else float(temperature),
             max_context_chars=self.max_context_chars,
             relevance_threshold=self.relevance_threshold,
             history=history,
             generic_threshold=self.generic_threshold,
             generic_min_sources=self.generic_min_sources,
             category_suggestions=self.category_suggestions,
-            history_max_messages=self.history_max_messages,
+            history_max_messages=(
+                self.history_max_messages
+                if context_window is None
+                else max(1, int(context_window))
+            ),
             history_max_chars=self.history_max_chars,
+            max_tokens=self.max_tokens if max_tokens is None else max_tokens,
+            system_prompt=(
+                self.system_prompt if system_prompt is None else system_prompt
+            ),
         )
         return result["answer"]
 
@@ -906,6 +931,8 @@ def timed_rag_query(
     category_suggestions: int = DEFAULT_CATEGORY_SUGGESTIONS,
     history_max_messages: int = 8,
     history_max_chars: int = DEFAULT_HISTORY_MAX_CHARS,
+    max_tokens: int | None = None,
+    system_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Выполняет RAG-запрос локально и раздельно замеряет этапы.
 
@@ -1033,10 +1060,13 @@ def timed_rag_query(
         max_chars=max_context_chars,
         history=selected_history,
         extra_instruction=extra_instruction,
+        system_prompt=system_prompt,
     )
     t1 = time.perf_counter()
     try:
-        completion: Completion = client.complete(messages, temperature=temperature)
+        completion: Completion = client.complete(
+            messages, temperature=temperature, max_tokens=max_tokens
+        )
         generation_ms = (time.perf_counter() - t1) * 1000
         content = completion.content
         is_refusal = verify_refusal_and_clarification(content)["is_refusal"]
