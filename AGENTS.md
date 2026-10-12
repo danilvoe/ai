@@ -2,9 +2,9 @@
 
 ## 1. Project Context & Branch Architecture
 
-This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 26**.
+This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 27**.
 
-- **Branch-per-Lesson Structure**: Each Git branch (`day2`, `day3`, ..., `day25`, `master`) represents the code state at that specific lesson.
+- **Branch-per-Lesson Structure**: Each Git branch (`day2`, `day3`, ..., `day27`, `master`) represents the code state at that specific lesson.
 - **Cumulative Codebase**: The project evolves incrementally. For example, `day25` contains RAG chat with task state memory, while `day10` only contains early context management.
 - **Active Context**: Always check the active branch via `git branch --show-current` before making assumptions about available modules.
 
@@ -44,7 +44,7 @@ To prevent massive token consumption and context window exhaustion, any coding a
 
 ---
 
-## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 26)
+## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 27)
 
 Use this table to jump directly to the relevant file instead of traversing the filesystem:
 
@@ -75,6 +75,7 @@ Use this table to jump directly to the relevant file instead of traversing the f
 | **Day 24** | Grounded RAG (Citations, anti-hallucination threshold, quote alignment) | `agent/grounding.py`, `agent/grounding_scenarios.py` | `python3 -m agent.grounding_scenarios --no-llm` |
 | **Day 25** | Mini-Chat CLI with RAG, Task State memory & verified sources | `agent/rag_chat.py`, `agent/rag_chat_cli.py`, `agent/rag_chat_scenarios.py`, `chat_rag.py` | `python3 -m agent.rag_chat_scenarios --no-llm` |
 | **Day 26** | Local LLM via llama.cpp (build, CLI + OpenAI-compatible server) | `agent/local_llm.py`, `agent/local_llm_scenarios.py`, `chat_local.py`, `scripts/setup_llama_cpp.sh` | `python3 -m agent.local_llm_scenarios --offline` |
+| **Day 27** | Web chat app on the local LLM (Flask, no cloud models) | `agent/web_chat.py`, `agent/web_chat_scenarios.py`, `web_local.py` | `python3 -m agent.web_chat_scenarios --offline` |
 
 ---
 
@@ -112,6 +113,7 @@ When working on a specific subsystem, target these exact modules:
 - **Scenario**: `agent/local_llm_scenarios.py` (offline stub + live llama-cli/llama-server checks)
 - **Bootstrap**: `scripts/setup_llama_cpp.sh` (build llama.cpp + download GGUF into `history/`)
 - **Chat entrypoint**: `chat_local.py`
+- **Web chat (Day 27)**: `agent/web_chat.py` (`WebChatBackend`, `ChatSession`, `StubLLMClient`, `create_app`), `web_local.py`
 
 ---
 
@@ -122,6 +124,9 @@ Run these exact commands to verify your changes without incurring API costs or w
 ```bash
 # Day 26 Local LLM (llama.cpp) verification - offline stub, no build/network
 python3 -m agent.local_llm_scenarios --offline
+
+# Day 27 Web chat with local LLM verification - offline stub, no model/network
+python3 -m agent.web_chat_scenarios --offline
 
 # Day 25 RAG Chat verification
 python3 -m agent.rag_chat_scenarios --no-llm

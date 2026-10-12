@@ -142,6 +142,12 @@
     "startup_timeout": 120,
     "model_label": "local-llm"
   },
+  "web_chat": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "window_size": 8,
+    "max_sessions": 64
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

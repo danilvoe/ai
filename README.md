@@ -95,6 +95,83 @@ python3 -m agent.rag_chat_scenarios --limit 2
 
 ---
 
+# Day 27: Local LLM in a Real Application — Web Chat
+
+A small **Flask web application** that sends chat messages to the **local** LLM
+from Day 26 (`llama-server`, OpenAI-compatible `/v1` endpoint) and renders the
+replies in the browser. No cloud models, no API keys — the whole path is
+**browser → Flask → local `llama-server`**.
+
+The web layer is a thin adapter over the existing `Agent` / `Conversation`
+(unchanged): sessions persist to `history/<session_id>.json`, and a sliding
+window keeps the local context bounded. A deterministic **offline stub** lets the
+whole app be verified without building llama.cpp or downloading a model.
+
+## Architecture
+
+| Component | Module | Responsibility |
+| --- | --- | --- |
+| **`WebChatBackend`** | `agent/web_chat.py` | Owns the local server lifecycle (start/stop) and the in-memory session registry; `chat()`, `reset()`, `status()`, `history()` |
+| **`ChatSession`** | `agent/web_chat.py` | One dialogue: a `Conversation` + an `Agent` (sliding window, local context limit) with a per-session lock |
+| **`StubLLMClient`** | `agent/web_chat.py` | Offline LLM client compatible with `Agent` (`.config` + `.complete()`), backed by `StubLocalLLM` |
+| **`create_app`** | `agent/web_chat.py` | Flask app: `GET /` (HTML chat), `GET /api/status`, `POST /api/chat`, `POST /api/reset`, `GET /api/history` |
+| **Entrypoint** | `web_local.py` | CLI: starts the backend and serves the web app (`--offline`, `--host`, `--port`, `--llm-port`, `--model`, `--no-browser`) |
+| **Scenario** | `agent/web_chat_scenarios.py` | Offline/live verification via Flask's test client; writes `history/web_chat/report.md` + `results.json` |
+
+## Run
+
+```bash
+# 0. (once) install the web framework + build llama.cpp + download the model — see Day 26
+pip install flask
+bash scripts/setup_llama_cpp.sh
+
+# 1. Deterministic offline check (no model, no network)
+python3 -m agent.web_chat_scenarios --offline
+
+# 2. Start the web chat on the real local LLM
+python3 web_local.py
+
+# offline demo of the web app (deterministic stub)
+python3 web_local.py --offline
+
+# custom web port / llama-server port / model
+python3 web_local.py --port 8000 --llm-port 8090
+```
+
+Then open the printed URL (default `http://127.0.0.1:8000/`).
+
+Example offline verification run:
+
+```text
+✓ Веб-приложение отдаёт страницу чата
+✓ Статус бэкенда: модель готова
+✓ Запрос уходит в локальную модель и возвращается ответ
+✓ Второй запрос в ту же сессию
+✓ История диалога сохраняется между ходами
+✓ История очищается командой /api/reset
+✓ Пустое сообщение отклоняется
+Итог: 7/7 проверок пройдено.
+```
+
+## HTTP API
+
+| Method | Path | Body / Query | Returns |
+| --- | --- | --- | --- |
+| `GET` | `/` | — | HTML chat UI |
+| `GET` | `/api/status` | — | `{ready, mode, model, endpoint, sessions}` |
+| `POST` | `/api/chat` | `{message, session_id?}` | `{reply, session_id, model}` |
+| `POST` | `/api/reset` | `{session_id?}` | `{session_id, ok}` |
+| `GET` | `/api/history` | `?session_id=` | `{session_id, messages}` |
+
+## What was added
+
+- `agent/web_chat.py` — `StubLLMClient`, `ChatSession`, `WebChatBackend`, `create_app`, and the inline HTML chat page.
+- `web_local.py` — Flask entrypoint over the local `llama-server`.
+- `agent/web_chat_scenarios.py` — offline/live end-to-end verification + report.
+- `config.one.json` / `config.example.json` — new `web_chat` section (`host`, `port`, `window_size`, `max_sessions`).
+
+---
+
 # Day 26: Running a Local LLM with llama.cpp
 
 Run an LLM **fully locally** on CPU with [llama.cpp](https://github.com/ggml-org/llama.cpp) — no cloud API, no keys, no network at inference time. The bootstrap script builds `llama-cli` and `llama-server` from source and downloads a small GGUF model; the scenario then proves all three acceptance criteria:
