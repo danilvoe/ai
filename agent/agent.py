@@ -257,12 +257,19 @@ class Agent:
             messages = build_context_messages(self._conversation)
         if self._memory is not None:
             messages = self._memory.build_memory_context() + messages
-        return (
+        combined = (
             self._profile_messages()
             + self._invariant_messages()
             + self._task_messages()
             + messages
         )
+        # Перед отправкой в модель оставляем только поля, понятные LLM API:
+        # сообщения могут содержать служебные метаданные (например, режим
+        # ответа и источники RAG в веб-чате).
+        return [
+            {"role": message.get("role"), "content": message.get("content", "")}
+            for message in combined
+        ]
 
     @property
     def context_tokens(self) -> int:

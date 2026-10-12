@@ -1,26 +1,32 @@
-"""Day 27: интеграция локальной LLM в веб-приложение (базовый веб-чат).
+"""Day 27–28: веб-чат с локальной и облачной LLM.
 
-Модуль поднимает Flask-приложение, которое отправляет запросы в **локальную**
-модель из Дня 26 (``llama-server``, OpenAI-совместимый endpoint ``/v1``) и
-отображает её ответы в браузере. Облачные модели и API-ключи не используются.
+Модуль поднимает Flask-приложение, которое отправляет запросы в выбранную
+модель: **локальную** из Дня 26 (``llama-server``, OpenAI-совместимый endpoint
+``/v1``) или **облачную** (любой OpenAI-совместимый API из конфигурации).
+Пользователь выбирает модель (локальная/облачная) и режим ответа (RAG/без RAG)
+прямо в интерфейсе чата. Облачная модель доступна, только если в конфигурации
+задан ``api_key`` и ``model``; при работе ``--offline`` облачная опция отключена.
 
 Компоненты:
 
 * :class:`StubLLMClient` — детерминированный офлайн-клиент, совместимый с
   :class:`agent.agent.Agent` (нужен для проверок без сборки модели и сети);
-* :class:`ChatSession` — сессия диалога (``Conversation`` + ``Agent``);
-* :class:`WebChatBackend` — жизненный цикл локального сервера и реестр сессий;
+* :class:`ChatChannel` — один канал генерации (агент + опциональная RAG-система);
+* :class:`ChatSession` — сессия диалога с каналами «local»/«cloud»;
+* :class:`WebChatBackend` — жизненный цикл моделей и реестр сессий;
 * :func:`create_app` — Flask-приложение с JSON API и встроенным HTML-чатом.
 
 Запуск (через точку входа)::
 
-    python3 web_local.py            # живой локальный llama-server
+    python3 web_local.py            # живой локальный llama-server (+ облако)
+    python3 web_local.py --no-cloud # только локальная модель
     python3 web_local.py --offline  # веб-чат на детерминированном стабе
 """
 
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, request
@@ -28,12 +34,33 @@ from flask import Flask, Response, jsonify, request
 from .agent import Agent
 from .context import SlidingWindowStrategy
 from .conversation import Conversation, SessionStore
-from .llm_client import Completion
+from .indexing import HashingEmbedder
+from .llm_client import Completion, LLMClient
 from .local_llm import LocalLLMConfig, LocalLLMServer, StubLocalLLM
+from .local_rag import (
+    DEFAULT_CATEGORY_SUGGESTIONS,
+    DEFAULT_GENERIC_MIN_SOURCES,
+    DEFAULT_GENERIC_THRESHOLD,
+    DEFAULT_HISTORY_MAX_CHARS,
+    DEFAULT_RELEVANCE_THRESHOLD,
+    LocalRagSystem,
+)
+from .rag import RagRetriever, RagSource, load_retriever
 from .tokens import ContextOverflowError
 
 DEFAULT_WINDOW_SIZE = 8
 DEFAULT_MAX_SESSIONS = 64
+DEFAULT_TOP_K = 5
+DEFAULT_TEMPERATURE = 0.2
+DEFAULT_MAX_CONTEXT_CHARS = 6000
+
+
+class RagUnavailableError(RuntimeError):
+    """Режим «рецепты» выбран, но RAG-индекс недоступен."""
+
+
+class ModelSourceUnavailableError(RuntimeError):
+    """Выбран источник модели («local»/«cloud»), который недоступен."""
 
 
 class StubLLMClient:
@@ -68,12 +95,69 @@ class StubLLMClient:
         return Completion(content=content, model=self.config["model"])
 
 
-class ChatSession:
-    """Одна сессия веб-чата: диалог с моделью и его история на диске."""
+@dataclass
+class ChatReply:
+    """Нормализованный ответ ассистента (без RAG или с найденными источниками)."""
 
-    def __init__(self, conversation: Conversation, agent: Agent) -> None:
+    content: str
+    model: str
+    sources: list[dict] = field(default_factory=list)
+    model_source: str = "local"
+
+
+def _compact_sources(sources: list[RagSource]) -> list[dict]:
+    """Компактное представление источников для хранения в истории сессии.
+
+    Без полного текста чанка (``text``) — иначе файл сессии быстро растёт.
+    """
+    return [
+        {
+            "rank": s.rank,
+            "title": s.title,
+            "section": s.section,
+            "step_number": s.step_number,
+            "score": round(s.score, 4),
+            "recipe_id": s.recipe_id,
+            "url": s.url,
+        }
+        for s in sources
+    ]
+
+
+@dataclass
+class ChatChannel:
+    """Один канал генерации: обычный агент и (опционально) RAG-система.
+
+    ``label`` — человекочитаемое имя модели, ``agent`` — обычный канал без RAG,
+    ``rag_system`` — канал «рецепты» (поиск по индексу + генерация).
+    """
+
+    agent: Agent
+    rag_system: LocalRagSystem | None = None
+    label: str = "local"
+
+
+class ChatSession:
+    """Одна сессия веб-чата: диалог с моделью и его история на диске.
+
+    Содержит каналы генерации (обычно «local» и, если облачная модель
+    настроена, «cloud»). Каждый канал — это :class:`ChatChannel` с обычным
+    агентом и, если индекс рецептов доступен, RAG-системой. Режим ответа
+    (RAG/без RAG) и источник модели (local/cloud) выбираются на каждое
+    сообщение. Все каналы используют общую
+    :class:`agent.conversation.Conversation`, поэтому история диалога
+    сохраняется и учитывается (в RAG — как предыдущие реплики).
+    """
+
+    def __init__(
+        self,
+        conversation: Conversation,
+        channels: dict[str, ChatChannel] | None = None,
+        history_window: int = DEFAULT_WINDOW_SIZE,
+    ) -> None:
         self._conversation = conversation
-        self._agent = agent
+        self._channels = channels or {}
+        self._history_window = max(2, int(history_window))
         self._lock = threading.Lock()
 
     @property
@@ -85,10 +169,62 @@ class ChatSession:
         """История сообщений сессии (user/assistant)."""
         return self._conversation.messages
 
-    def ask(self, message: str) -> Completion:
-        """Отправляет сообщение в локальную модель и возвращает ответ."""
+    @property
+    def rag_enabled(self) -> bool:
+        """Доступен ли RAG хотя бы в одном канале."""
+        return any(channel.rag_system is not None for channel in self._channels.values())
+
+    @property
+    def sources(self) -> list[str]:
+        """Доступные источники модели (``local``/``cloud``)."""
+        return list(self._channels)
+
+    def ask(
+        self, message: str, use_rag: bool = False, model_source: str = "local"
+    ) -> ChatReply:
+        """Отправляет сообщение в выбранную модель и возвращает ответ.
+
+        ``model_source`` выбирает канал («local»/«cloud»), ``use_rag=True``
+        включает поиск по базе рецептов; иначе вызывается обычный агент, и
+        retrieval не задействуется вовсе. Оба режима пишут диалог в общую
+        историю сессии.
+        """
         with self._lock:
-            return self._agent.ask(message)
+            channel = self._channels.get(model_source)
+            if channel is None:
+                raise ModelSourceUnavailableError(
+                    f"Источник модели «{model_source}» недоступен"
+                )
+            if use_rag:
+                if channel.rag_system is None:
+                    raise RagUnavailableError("RAG (рецепты) недоступен")
+                history = self._conversation.recent_messages[-(self._history_window):]
+                answer = channel.rag_system.ask_with_rag(message, history=history)
+                if answer.error:
+                    raise RuntimeError(answer.error)
+                # Фиксируем ход в истории, чтобы он сохранился и попал в
+                # контекст следующих сообщений. Источники храним компактно.
+                self._conversation.append("user", message)
+                self._conversation.append(
+                    "assistant",
+                    answer.content,
+                    meta={
+                        "mode": "rag",
+                        "model_source": model_source,
+                        "sources": _compact_sources(answer.sources),
+                    },
+                )
+                self._conversation.trim_to(self._history_window)
+                return ChatReply(
+                    content=answer.content,
+                    model=channel.rag_system.model_label,
+                    sources=[s.to_dict() for s in answer.sources],
+                    model_source=model_source,
+                )
+            reply = channel.agent.ask(message)
+            return ChatReply(
+                content=reply.content, model=reply.model, model_source=model_source
+            )
 
     def reset(self) -> None:
         """Очищает историю диалога сессии."""
@@ -97,11 +233,20 @@ class ChatSession:
 
 
 class WebChatBackend:
-    """Бэкенд веб-чата: локальный сервер + реестр сессий диалога.
+    """Бэкенд веб-чата: локальная и облачная модели + реестр сессий диалога.
 
     В живом режиме поднимает ``llama-server`` (День 26) и направляет на него
-    агентов. В офлайн-режиме использует :class:`StubLLMClient`, поэтому
-    приложение и его проверки работают без сборки и модели.
+    агентов; если в конфигурации задан ``api_key`` и ``model``, рядом становится
+    доступен и облачный канал (любой OpenAI-совместимый API). В офлайн-режиме
+    использует :class:`StubLLMClient`, поэтому приложение и его проверки
+    работают без сборки, модели и сети.
+
+    RAG-возможность (база рецептов) включена по умолчанию: при старте бэкенд
+    пытается загрузить локальный FAISS-индекс, а режим («рецепты» или обычный)
+    выбирается на каждое сообщение флагом ``use_rag``. Источник модели
+    («local»/«cloud») выбирается параметром ``model_source``. Если индекс
+    недоступен, веб-чат всё равно работает в обычном режиме, а запрос
+    «рецептов» возвращает ошибку :class:`RagUnavailableError`.
     """
 
     def __init__(
@@ -113,6 +258,14 @@ class WebChatBackend:
         window_size: int | None = None,
         max_sessions: int | None = None,
         history_dir=None,
+        rag: bool = False,
+        retriever: RagRetriever | None = None,
+        top_k: int | None = None,
+        temperature: float | None = None,
+        client=None,
+        enable_rag: bool = True,
+        cloud: bool = True,
+        cloud_client=None,
     ) -> None:
         self.config = config
         self.offline = offline
@@ -128,14 +281,57 @@ class WebChatBackend:
         sessions = max_sessions if max_sessions is not None else section.get(
             "max_sessions", DEFAULT_MAX_SESSIONS
         )
+        rag_section = (config or {}).get("local_rag", {}) or {}
         self._window_size = max(1, int(window))
         self._max_sessions = max(1, int(sessions))
+        self._top_k = max(1, int(top_k if top_k is not None else rag_section.get(
+            "top_k", DEFAULT_TOP_K
+        )))
+        self._temperature = float(
+            temperature if temperature is not None else rag_section.get(
+                "temperature", DEFAULT_TEMPERATURE
+            )
+        )
+        self._max_context_chars = int(
+            rag_section.get("max_context_chars", DEFAULT_MAX_CONTEXT_CHARS)
+        )
+        self._relevance_threshold = float(
+            rag_section.get("relevance_threshold", DEFAULT_RELEVANCE_THRESHOLD)
+        )
+        self._history_max_chars = int(
+            rag_section.get("history_max_chars", DEFAULT_HISTORY_MAX_CHARS)
+        )
+        self._generic_threshold = float(
+            rag_section.get("generic_threshold", DEFAULT_GENERIC_THRESHOLD)
+        )
+        self._generic_min_sources = max(
+            1, int(rag_section.get("generic_min_sources", DEFAULT_GENERIC_MIN_SOURCES))
+        )
+        self._category_suggestions = max(
+            1, int(rag_section.get("category_suggestions", DEFAULT_CATEGORY_SUGGESTIONS))
+        )
+        self._retriever = retriever
+        # RAG-возможность: включена по умолчанию (`enable_rag`), флаг `rag`
+        # оставлен для обратной совместимости, явный retriever тоже включает её.
+        self._rag_capability = bool(enable_rag) or bool(rag) or retriever is not None
+        self._rag_error: str | None = None
         self._store = (
             SessionStore(Path(history_dir)) if history_dir else SessionStore()
         )
         self._server: LocalLLMServer | None = None
-        self._client = None
+        self._client = client
+        self._injected_client = client is not None
         self._max_context_tokens: int | None = None
+        # Облачный канал: включается флагом `cloud` и наличием api_key/model в
+        # конфигурации. Явно переданный `cloud_client` включает его всегда
+        # (используется в офлайн-проверках).
+        self._cloud_capability = bool(cloud) or cloud_client is not None
+        self._cloud_client = cloud_client
+        self._injected_cloud = cloud_client is not None
+        _cloud_ctx = (config or {}).get("max_context_tokens")
+        self._cloud_max_context_tokens: int | None = (
+            int(_cloud_ctx) if _cloud_ctx is not None else None
+        )
         self._sessions: dict[str, ChatSession] = {}
         self._lock = threading.Lock()
 
@@ -150,8 +346,36 @@ class WebChatBackend:
         return self._client is not None
 
     @property
+    def rag_enabled(self) -> bool:
+        """Доступен ли RAG-режим (индекс рецептов загружен)."""
+        return self._retriever is not None
+
+    @property
+    def rag_error(self) -> str | None:
+        """Причина недоступности RAG (если индекс не загрузился)."""
+        return self._rag_error
+
+    @property
     def model_label(self) -> str:
         return self.local.model_label
+
+    @property
+    def cloud_enabled(self) -> bool:
+        """Доступен ли облачный канал (клиент настроен)."""
+        return self._cloud_client is not None
+
+    @property
+    def cloud_model_label(self) -> str:
+        """Метка облачной модели из конфигурации (пусто, если не задана)."""
+        return str((self.config or {}).get("model", "") or "")
+
+    @property
+    def model_sources(self) -> list[str]:
+        """Доступные источники модели в порядке отображения."""
+        sources = ["local"]
+        if self.cloud_enabled:
+            sources.append("cloud")
+        return sources
 
     @property
     def endpoint(self) -> str:
@@ -160,16 +384,54 @@ class WebChatBackend:
             return "stub://local-llm"
         return f"http://{self.local.host}:{self.local.port}/v1"
 
+    def _load_retriever(self) -> RagRetriever:
+        """Загружает локальный FAISS-индекс рецептов из конфигурации."""
+        rag_section = (self.config or {}).get("local_rag", {}) or {}
+        rag_section = {**((self.config or {}).get("rag", {}) or {}), **rag_section}
+        idx_section = (self.config or {}).get("indexing", {}) or {}
+        embedder = HashingEmbedder(dim=int(idx_section.get("embedding_dim", 256)))
+        return load_retriever(
+            index_dir=idx_section.get("index_dir", "history/index"),
+            dataset=rag_section.get("dataset", "recipt_all"),
+            strategy=rag_section.get("strategy", "structural"),
+            embedder=embedder,
+            top_k=self._top_k,
+        )
+
+    def _build_cloud_client(self):
+        """Создаёт облачный клиент, если он настроен (иначе None).
+
+        В офлайн-режиме облако не поднимается: без сети облачный API недоступен.
+        """
+        if not self._cloud_capability or self.offline:
+            return None
+        if not (self.config or {}).get("api_key"):
+            return None
+        if not (self.config or {}).get("model"):
+            return None
+        return LLMClient(self.config)
+
     def start(self) -> WebChatBackend:
-        """Готовит модель: поднимает llama-server или включает офлайн-стаб."""
-        if self.offline:
+        """Готовит модели: поднимает llama-server, стаб и/или облачный клиент."""
+        if self._injected_client:
+            self._max_context_tokens = None
+        elif self.offline:
             self._client = StubLLMClient(f"{self.local.model_label}-stub")
             self._max_context_tokens = None
-            return self
-        self._server = LocalLLMServer(self.local)
-        self._server.start()
-        self._client = self._server.build_client()
-        self._max_context_tokens = self._server.max_context_tokens
+        else:
+            self._server = LocalLLMServer(self.local)
+            self._server.start()
+            self._client = self._server.build_client()
+            self._max_context_tokens = self._server.max_context_tokens
+        if not self._injected_cloud:
+            self._cloud_client = self._build_cloud_client()
+        if self._rag_capability and self._retriever is None:
+            try:
+                self._retriever = self._load_retriever()
+                self._rag_error = None
+            except Exception as exc:  # noqa: BLE001 — без RAG чат должен работать
+                self._retriever = None
+                self._rag_error = str(exc)
         return self
 
     def stop(self) -> None:
@@ -180,25 +442,79 @@ class WebChatBackend:
 
     def status(self) -> dict:
         """Сводка состояния бэкенда для ``GET /api/status``."""
-        return {
+        result = {
             "ready": self.ready,
             "mode": self.mode,
             "model": self.model_label,
+            "local_model": self.model_label,
+            "cloud": self.cloud_enabled,
+            "cloud_model": self.cloud_model_label if self.cloud_enabled else None,
+            "sources": self.model_sources,
             "endpoint": self.endpoint,
             "sessions": len(self._sessions),
+            "rag": self.rag_enabled,
         }
+        if self.rag_enabled:
+            result["dataset"] = self._retriever.index.metadata.get("source", "unknown")
+            result["vectors"] = self._retriever.total_vectors
+            result["top_k"] = self._top_k
+        elif self._rag_error:
+            result["rag_error"] = self._rag_error
+        return result
+
+    def _build_channel(
+        self,
+        conversation: Conversation,
+        client,
+        label: str,
+        max_context_tokens: int | None,
+    ) -> ChatChannel:
+        """Собирает канал генерации (обычный агент + RAG, если индекс доступен)."""
+        agent = Agent(
+            client,
+            conversation,
+            max_context_tokens=max_context_tokens,
+            context_strategy=SlidingWindowStrategy(size=self._window_size),
+        )
+        rag_system = None
+        if self._retriever is not None:
+            rag_system = LocalRagSystem(
+                client=client,
+                retriever=self._retriever,
+                top_k=self._top_k,
+                temperature=self._temperature,
+                max_context_chars=self._max_context_chars,
+                model_label=str(client.config.get("model", label)),
+                relevance_threshold=self._relevance_threshold,
+                history_max_messages=self._window_size,
+                history_max_chars=self._history_max_chars,
+                generic_threshold=self._generic_threshold,
+                generic_min_sources=self._generic_min_sources,
+                category_suggestions=self._category_suggestions,
+            )
+        return ChatChannel(agent=agent, rag_system=rag_system, label=label)
 
     def _build_session(self, session_id: str | None) -> ChatSession:
         conversation = (
             self._store.get(session_id) if session_id else self._store.create()
         )
-        agent = Agent(
-            self._client,
+        channels: dict[str, ChatChannel] = {}
+        if self._client is not None:
+            channels["local"] = self._build_channel(
+                conversation, self._client, self.model_label, self._max_context_tokens
+            )
+        if self._cloud_client is not None:
+            channels["cloud"] = self._build_channel(
+                conversation,
+                self._cloud_client,
+                self.cloud_model_label or "cloud",
+                self._cloud_max_context_tokens,
+            )
+        return ChatSession(
             conversation,
-            max_context_tokens=self._max_context_tokens,
-            context_strategy=SlidingWindowStrategy(size=self._window_size),
+            channels=channels,
+            history_window=self._window_size,
         )
-        return ChatSession(conversation, agent)
 
     def _get_session(self, session_id: str | None) -> ChatSession:
         with self._lock:
@@ -214,20 +530,41 @@ class WebChatBackend:
             self._sessions[session.session_id] = session
             return session
 
-    def chat(self, message: str, session_id: str | None = None) -> dict:
-        """Отправляет сообщение в локальную модель и возвращает ответ.
+    def chat(
+        self,
+        message: str,
+        session_id: str | None = None,
+        use_rag: bool = False,
+        model_source: str = "local",
+    ) -> dict:
+        """Отправляет сообщение в выбранную модель и возвращает ответ.
 
-        Возвращает словарь ``{session_id, reply, model}``. Если ``session_id``
-        не передан — создаётся новая сессия, её id возвращается клиенту.
+        ``model_source`` выбирает источник модели («local»/«cloud»);
+        ``use_rag=True`` включает поиск по базе рецептов (режим «рецепты»). Если
+        источник или RAG недоступны, поднимается
+        :class:`ModelSourceUnavailableError` / :class:`RagUnavailableError`.
+        Возвращает словарь
+        ``{session_id, reply, model, model_source, sources, used_rag, rag_available}``.
         """
         if not self.ready:
             raise RuntimeError("Бэкенд не запущен: вызовите start() перед запросами.")
+        if model_source not in self.model_sources:
+            raise ModelSourceUnavailableError(
+                f"Источник модели «{model_source}» недоступен"
+            )
+        if use_rag and not self.rag_enabled:
+            reason = self._rag_error or "индекс рецептов не загружен"
+            raise RagUnavailableError(f"RAG (рецепты) недоступен: {reason}")
         session = self._get_session(session_id)
-        reply = session.ask(message)
+        reply = session.ask(message, use_rag=use_rag, model_source=model_source)
         return {
             "session_id": session.session_id,
             "reply": reply.content,
             "model": reply.model,
+            "model_source": reply.model_source,
+            "sources": reply.sources,
+            "used_rag": bool(use_rag and self.rag_enabled),
+            "rag_available": self.rag_enabled,
         }
 
     def reset(self, session_id: str | None) -> str:
@@ -275,6 +612,18 @@ HTML_PAGE = """<!DOCTYPE html>
   .msg.assistant .bubble { background: #1b1f2a; border: 1px solid #232734;
                            border-bottom-left-radius: 3px; }
   .msg.system .bubble { background: #2a2010; border: 1px solid #4a3a12; color: #f0c060; }
+  .rbadge { display: inline-block; font-size: 11px; line-height: 1.6; padding: 0 7px;
+            border-radius: 6px; margin-right: 6px; font-weight: 600; }
+  .rbadge.rag { background: #243a2a; color: #7fd39a; border: 1px solid #2f5138; }
+  .rbadge.plain { background: #2a2f3a; color: #9aa3b8; border: 1px solid #39404f; }
+  .rbadge.src-local { background: #1e2a3a; color: #7fa8e0; border: 1px solid #2c3e56; }
+  .rbadge.src-cloud { background: #2f2338; color: #cf9de0; border: 1px solid #4a2f56; }
+  .sources { margin-top: 10px; padding-top: 8px; border-top: 1px dashed #2c3140;
+             font-size: 12px; color: #8b93a7; white-space: normal; }
+  .sources .stitle { font-weight: 600; color: #aab2c8; margin-bottom: 4px; }
+  .sources .sline { margin: 2px 0; overflow-wrap: anywhere; }
+  .sources a { color: #6ea8ff; text-decoration: none; }
+  .sources a:hover { text-decoration: underline; }
   footer { border-top: 1px solid #232734; padding: 12px 18px; }
   form { max-width: 760px; margin: 0 auto; display: flex; gap: 10px; }
   textarea {
@@ -282,6 +631,12 @@ HTML_PAGE = """<!DOCTYPE html>
     border: 1px solid #2c3140; background: #151924; color: inherit; font: inherit;
   }
   textarea:focus { outline: none; border-color: #2b5cff; }
+  select.mode {
+    height: 46px; padding: 0 10px; border-radius: 10px;
+    border: 1px solid #2c3140; background: #151924; color: inherit; font: inherit;
+  }
+  select.mode:focus { outline: none; border-color: #2b5cff; }
+  select.mode:disabled { opacity: .5; }
   button {
     padding: 0 18px; border: 0; border-radius: 10px; cursor: pointer;
     background: #2b5cff; color: #fff; font: inherit; font-weight: 600;
@@ -292,7 +647,7 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>Локальный LLM-чат</h1>
+  <h1>LLM-чат: локальная и облачная модель</h1>
   <span class="status"><span id="dot" class="dot"></span><span id="status">подключение…</span></span>
   <span style="flex:1"></span>
   <button class="ghost" id="reset" type="button">Очистить</button>
@@ -300,7 +655,15 @@ HTML_PAGE = """<!DOCTYPE html>
 <main id="log"></main>
 <footer>
   <form id="form">
-    <textarea id="input" placeholder="Спросите локальную модель…" autofocus></textarea>
+    <select id="source" class="mode" title="Модель">
+      <option value="local" selected>локальная</option>
+      <option value="cloud">облачная</option>
+    </select>
+    <select id="mode" class="mode" title="Режим ответа">
+      <option value="off">не использовать RAG</option>
+      <option value="rag" selected>рецепты</option>
+    </select>
+    <textarea id="input" placeholder="Спросите модель…" autofocus></textarea>
     <button id="send" type="submit">Отправить</button>
   </form>
 </footer>
@@ -312,7 +675,12 @@ HTML_PAGE = """<!DOCTYPE html>
   const resetBtn = document.getElementById('reset');
   const statusEl = document.getElementById('status');
   const dot = document.getElementById('dot');
-  let sessionId = null;
+  const modeEl = document.getElementById('mode');
+  const sourceEl = document.getElementById('source');
+  const HISTORY_KEY = 'llm_chat_session';
+  const MODE_KEY = 'llm_chat_mode';
+  const SOURCE_KEY = 'llm_chat_source';
+  let sessionId = localStorage.getItem(HISTORY_KEY);
 
   function add(role, text) {
     const wrap = document.createElement('div');
@@ -326,12 +694,101 @@ HTML_PAGE = """<!DOCTYPE html>
     return bubble;
   }
 
+  function makeBadge(cls, text) {
+    const b = document.createElement('span');
+    b.className = 'rbadge ' + cls;
+    b.textContent = text;
+    return b;
+  }
+
+  function setBadge(bubble, mode, source) {
+    const frag = document.createDocumentFragment();
+    const isCloud = source === 'cloud';
+    frag.appendChild(makeBadge(isCloud ? 'src-cloud' : 'src-local',
+                               isCloud ? 'облачная' : 'локальная'));
+    frag.appendChild(makeBadge(mode === 'rag' ? 'rag' : 'plain',
+                               mode === 'rag' ? 'рецепты' : 'без RAG'));
+    bubble.prepend(frag);
+  }
+
+  function renderSources(bubble, sources) {
+    if (!sources || !sources.length) return;
+    const box = document.createElement('div');
+    box.className = 'sources';
+    const title = document.createElement('div');
+    title.className = 'stitle';
+    title.textContent = 'Источники (' + sources.length + '):';
+    box.appendChild(title);
+    sources.forEach((s) => {
+      const line = document.createElement('div');
+      line.className = 'sline';
+      let label = '#' + s.rank + ' «' + (s.title || '—') + '»';
+      const sec = s.section ? ' [' + s.section + (s.step_number ? ' #' + s.step_number : '') + ']' : '';
+      label += sec + ' · сходство ' + s.score;
+      if (s.url) {
+        const a = document.createElement('a');
+        a.href = s.url; a.target = '_blank'; a.rel = 'noopener';
+        a.textContent = label;
+        line.appendChild(a);
+      } else {
+        line.textContent = label;
+      }
+      box.appendChild(line);
+    });
+    bubble.appendChild(box);
+  }
+
+  async function loadHistory() {
+    if (!sessionId) return;
+    try {
+      const r = await fetch('api/history?session_id=' + encodeURIComponent(sessionId));
+      const data = await r.json();
+      const messages = data.messages || [];
+      if (!messages.length) return;
+      add('system', 'История диалога восстановлена.');
+      messages.forEach((m) => {
+        const bubble = add(m.role === 'user' ? 'user' : 'assistant', m.content);
+        if (m.role !== 'user') {
+          const meta = m.meta || {};
+          setBadge(bubble, meta.mode === 'rag' ? 'rag' : 'plain',
+                   meta.model_source || 'local');
+          renderSources(bubble, meta.sources || []);
+        }
+      });
+    } catch (e) {
+      // История необязательна: при сбое начинаем с чистого листа.
+    }
+  }
+
   async function loadStatus() {
     try {
       const r = await fetch('api/status');
       const s = await r.json();
-      statusEl.textContent = s.mode + ' · ' + s.model;
+      const ragNote = s.rag ? ' · RAG доступен' : ' · RAG недоступен';
+      const cloudNote = s.cloud ? ' · облако доступно' : ' · облако недоступно';
+      statusEl.textContent = s.mode + ragNote + cloudNote + ' · ' + s.model;
       dot.className = 'dot' + (s.ready ? ' ok' : '');
+      // Облачная опция осмысленна только при настроенном облачном API.
+      const cloudOpt = sourceEl.querySelector('option[value="cloud"]');
+      if (cloudOpt) cloudOpt.disabled = !s.cloud;
+      sourceEl.title = s.cloud
+        ? 'Модель (облачная: ' + (s.cloud_model || '—') + ')'
+        : 'Облачная модель недоступна (нет api_key/model)';
+      // Источник по умолчанию: сохранённый в localStorage, иначе «локальная».
+      let source = localStorage.getItem(SOURCE_KEY);
+      if (!source) source = 'local';
+      if (source === 'cloud' && !s.cloud) source = 'local';
+      sourceEl.value = source;
+      // «рецепты» осмысленны только при доступном индексе.
+      modeEl.title = s.rag
+        ? 'Режим ответа (RAG-база: ' + (s.dataset || 'рецепты') + ')'
+        : 'RAG недоступен: ' + (s.rag_error || 'индекс не загружен');
+      // Режим по умолчанию: сохранённый в localStorage, иначе «рецепты»
+      // (если RAG доступен) — иначе «не использовать RAG».
+      let mode = localStorage.getItem(MODE_KEY);
+      if (!mode) mode = s.rag ? 'rag' : 'off';
+      if (mode === 'rag' && !s.rag) mode = 'off';
+      modeEl.value = mode;
     } catch (e) {
       statusEl.textContent = 'нет связи';
     }
@@ -349,7 +806,12 @@ HTML_PAGE = """<!DOCTYPE html>
       const r = await fetch('api/chat', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({session_id: sessionId, message: text}),
+        body: JSON.stringify({
+          session_id: sessionId,
+          message: text,
+          use_rag: modeEl.value === 'rag',
+          model_source: sourceEl.value,
+        }),
       });
       const data = await r.json();
       if (!r.ok) {
@@ -357,7 +819,11 @@ HTML_PAGE = """<!DOCTYPE html>
         pending.textContent = '⚠️ ' + (data.error || ('HTTP ' + r.status));
       } else {
         sessionId = data.session_id;
+        localStorage.setItem(HISTORY_KEY, sessionId);
         pending.textContent = data.reply;
+        setBadge(pending, data.used_rag ? 'rag' : 'plain',
+                 data.model_source || sourceEl.value);
+        renderSources(pending, data.sources);
       }
     } catch (err) {
       pending.parentElement.className = 'msg system';
@@ -376,10 +842,20 @@ HTML_PAGE = """<!DOCTYPE html>
     });
     log.innerHTML = '';
     sessionId = null;
+    localStorage.removeItem(HISTORY_KEY);
     add('system', 'История очищена.');
   });
 
+  modeEl.addEventListener('change', () => {
+    localStorage.setItem(MODE_KEY, modeEl.value);
+  });
+
+  sourceEl.addEventListener('change', () => {
+    localStorage.setItem(SOURCE_KEY, sourceEl.value);
+  });
+
   loadStatus();
+  loadHistory();
 </script>
 </body>
 </html>
@@ -407,8 +883,33 @@ def create_app(backend: WebChatBackend) -> Flask:
         if not message:
             return jsonify({"error": "Пустое сообщение"}), 400
         session_id = data.get("session_id")
+        use_rag = bool(data.get("use_rag", False))
+        model_source = str(data.get("model_source", "local") or "local")
+        if model_source not in backend.model_sources:
+            return (
+                jsonify(
+                    {
+                        "error": f"Источник модели «{model_source}» недоступен",
+                        "session_id": session_id,
+                    }
+                ),
+                400,
+            )
+        if use_rag and not backend.rag_enabled:
+            reason = backend.rag_error or "индекс рецептов не загружен"
+            return (
+                jsonify(
+                    {
+                        "error": f"RAG (рецепты) недоступен: {reason}",
+                        "session_id": session_id,
+                    }
+                ),
+                400,
+            )
         try:
-            result = backend.chat(message, session_id)
+            result = backend.chat(
+                message, session_id, use_rag=use_rag, model_source=model_source
+            )
         except ContextOverflowError:
             return (
                 jsonify(
@@ -419,8 +920,10 @@ def create_app(backend: WebChatBackend) -> Flask:
                 ),
                 409,
             )
-        except Exception as exc:  # noqa: BLE001 — понятная ошибка локальной модели
-            return jsonify({"error": f"Ошибка локальной модели: {exc}"}), 502
+        except (RagUnavailableError, ModelSourceUnavailableError) as exc:
+            return jsonify({"error": str(exc), "session_id": session_id}), 400
+        except Exception as exc:  # noqa: BLE001 — понятная ошибка модели
+            return jsonify({"error": f"Ошибка модели: {exc}"}), 502
         return jsonify(result)
 
     @app.post("/api/reset")

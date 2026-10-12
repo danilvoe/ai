@@ -148,6 +148,21 @@
     "window_size": 8,
     "max_sessions": 64
   },
+  "local_rag": {
+    "enabled": true,
+    "dataset": "recipt_all",
+    "strategy": "structural",
+    "top_k": 5,
+    "max_context_chars": 6000,
+    "temperature": 0.2,
+    "relevance_threshold": 0.33,
+    "history_max_chars": 2000,
+    "generic_threshold": 0.25,
+    "generic_min_sources": 3,
+    "category_suggestions": 5,
+    "repeats": 2,
+    "report_dir": "history/local_rag"
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

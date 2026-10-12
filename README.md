@@ -95,12 +95,167 @@ python3 -m agent.rag_chat_scenarios --limit 2
 
 ---
 
+# Day 28: Fully Local RAG — Local Retrieval + Local LLM
+
+A **Retrieval-Augmented Generation system that runs entirely on the local machine**:
+**question → local FAISS search over the recipe index → local LLM (`llama-server`) → grounded answer + sources**.
+No cloud API, no keys, no network at inference time.
+
+The retrieval layer reuses the **recipe index built in Week 6** (`history/index/recipt_all/structural`,
+534 recipes → 6,403 vectors, deterministic offline `HashingEmbedder`), and the generation layer reuses the
+**Day 26 `llama-server`**. The module also **compares the local model against a cloud model** on the same
+retrieved context across three axes: **quality, speed, and stability**.
+
+## Architecture
+
+| Component | Module | Responsibility |
+| --- | --- | --- |
+| **`LocalRagStubClient`** | `agent/local_rag.py` | Deterministic offline `LLMClient`-compatible client: answers extractively from the RAG context (plus a refusal for the anti-hallucination question). Enables zero-network verification |
+| **`LocalRagSystem`** | `agent/local_rag.py` | Lightweight RAG session: local FAISS retrieval + grounded generation through any `.complete`-client (local server, stub, or cloud) |
+| **`build_local_rag_client`** | `agent/local_rag.py` | Boots `llama-server` (Day 26) or returns the offline stub → `(server, client)` |
+| **`timed_rag_query`** | `agent/local_rag.py` | Runs one RAG query and measures **retrieval** and **generation** time separately |
+| **`compare_local_vs_cloud`** | `agent/local_rag.py` | Runs the 10 control questions with repeats; computes quality / speed / stability metrics |
+| **`answer_self_consistency`** | `agent/local_rag.py` | Stability metric: exact-match rate + mean pairwise token-Jaccard across repeated answers |
+| **Scenario** | `agent/local_rag_scenarios.py` | Offline stub or live `llama-server` run, local-vs-cloud comparison, HTTP check of the RAG web chat, report export |
+| **Web RAG chat** | `agent/web_chat.py` (per-message RAG mode + local/cloud model), `web_local.py` | Flask chat over the Day 27 app; two UI dropdowns pick the model (**локальная** / **облачная**) and the mode (**не использовать RAG** / **рецепты**) per message, sources shown under the answer |
+
+## Run
+
+```bash
+# 1. Deterministic offline check (stub, no model, no network)
+python3 -m agent.local_rag_scenarios --offline
+
+# 2. Live local RAG + comparison with the cloud model
+python3 -m agent.local_rag_scenarios
+
+# live local model only (no cloud calls)
+python3 -m agent.local_rag_scenarios --no-cloud
+
+# single question demo
+python3 -m agent.local_rag_scenarios --question "Сколько соли на 1 кг мяса для прайм риб?"
+
+# 3. Web chat: local + cloud model and a mode selector in the UI
+python3 web_local.py
+
+# offline demo of the web chat (deterministic stub)
+python3 web_local.py --offline
+
+# disable the cloud model (local model only)
+python3 web_local.py --no-cloud
+
+# disable the RAG option entirely (plain chat only)
+python3 web_local.py --no-rag
+```
+
+In the web UI there are two dropdowns next to the input: the **model** — **локальная** (default) or
+**облачная** — and the **mode** — **не использовать RAG** or **рецепты**. Every message is sent with the
+chosen model and mode: with «рецепты» the answer is built from the local recipe index and sources are shown
+under the reply; with «не использовать RAG» no retrieval is performed at all. The cloud option is available
+only when the config has `api_key` and `model` (any OpenAI-compatible API) and is disabled in `--offline`;
+local retrieval still applies, so the cloud model answers from the same recipe index. The RAG index is
+loaded automatically at startup; if it is missing, the chat still works in the plain mode and selecting
+«рецепты» returns a clear error ("RAG (рецепты) недоступен").
+
+Reports are written to `history/local_rag/report.md` and `history/local_rag/results.json`.
+
+Example offline verification run:
+
+```text
+✓ Локальный индекс загружен: 6403 векторов, top-5
+✓ Локальная генерация готова: local-llm-rag-stub
+✓ Веб-чат отдаёт страницу
+✓ RAG включён в статусе бэкенда
+✓ Ответ содержит и текст, и источники из локального индекса
+✓ Источник содержит метаданные рецепта
+```
+
+## What is evaluated
+
+| Axis | Local model | Cloud model |
+| --- | --- | --- |
+| **Quality** | fact coverage, citation rate, source recall@k (retrieval is shared) | fact coverage, citation rate |
+| **Speed** | answer latency, generation-only latency, local retrieval latency, tokens/sec | answer latency, generation-only latency, tokens/sec |
+| **Stability** | error rate, self-consistency (Jaccard), latency coefficient of variation | error rate, self-consistency, latency CV |
+
+Retrieval is **identical and local** for both models (the same chunks are retrieved once per question), so the
+retrieval metrics isolate search quality and the generation metrics isolate the model.
+
+## Relevance guardrail
+
+To avoid showing misleading sources (e.g. 5 low-similarity chunks next to a "don't know" answer), the local
+RAG path applies the same relevance threshold as the Day 24 anti-hallucination gate (`0.33`):
+
+- **Low relevance → no model call.** Chunks with `score < 0.33` are dropped before generation. If none
+  remain, the system returns an honest refusal («нет информации, релевантной вопросу») with **zero sources**
+  and never calls the LLM (also saves cloud tokens in the comparison).
+- **Grounded refusal → sources hidden + clean wording.** If the model answers with a refusal ("не знаю" /
+  "отсутствует" / "не указано", detected via `agent.grounding.verify_refusal_and_clarification`), the sources
+  are cleared and a meta-leaking reply (e.g. «контекст описывает…») is replaced with a canonical refusal.
+- **General questions ("что можно приготовить?")** soften the threshold to `local_rag.generic_threshold`
+  (0.25) and gather at least `local_rag.generic_min_sources` (3) recipes so the model can suggest options
+  instead of refusing.
+- **Browse / category queries** (broadened `_BROWSE_MARKERS` + `detect_category`, stems matched by word prefix):
+  - «рецепт из говядины» → **category browse**: sources are pulled straight from the index metadata
+    (`retriever.index.chunks`, multi-valued `category`) and ranked by cosine similarity to the query
+    (`retrieve_by_category`), yielding up to `local_rag.category_suggestions` **distinct** recipes of that
+    category (no threshold cut-off needed — the category *is* the filter).
+  - A query that names a **specific dish** is kept specific via a guard (`_matches_specific_dish`): significant
+    query words (minus browse markers and category stems) are prefix-matched against the top result's title.
+    So «рецепт шницеля из говядины» stays a single-dish query, while «рецепт из говядины» becomes a list.
+  - «топ 5» / «список рецептов» (no category) → generic route (soft threshold + padding).
+- **Follow-up references** ("подробней про 2 позицию", "второй", "расскажи про него"): the previous RAG turn's
+  sources are carried in the conversation (`meta.sources`), and the anaphoric question is resolved to a dish
+  name before retrieval — deterministically for an explicit ordinal (`_extract_ordinal` +
+  `_heuristic_resolve_reference`), and by an **LLM query rewrite with history** for pronouns/pointers
+  (`resolve_followup_query` + `FOLLOWUP_REWRITE_SYSTEM_PROMPT`), with the heuristic as fallback. The resolved
+  query is re-retrieved and answered on route `followup` (`FOLLOWUP_EXTRA_INSTRUCTION`: one recipe, ingredients
+  + steps). If the reference can't be bound, the reply asks to clarify (`CLARIFY_REFERENCE_MESSAGE`) instead of
+  flatly refusing, and the generic padding no longer injects below-floor junk.
+- **Meta-leak cleanup for every answer** (`strip_meta_leak`): sentences containing «контекст описывает…» /
+  «в предоставленном контексте…» are removed (not only on refusals); if nothing useful remains, the canonical
+  refusal is returned.
+- Configurable via `local_rag.relevance_threshold` (or `--relevance-threshold` in the scenario).
+
+## Dialogue history
+
+The web chat keeps a real conversation, not single turns:
+
+- **Both modes share the same `Conversation`** (Day 7): plain replies go through the `Agent`, and RAG replies
+  are recorded explicitly with compact metadata (`meta.mode` + sources), so `/api/history` and the on-disk
+  session include every turn. The mode metadata is **never sent to the LLM** (`Agent.context_messages` strips
+  everything except `role`/`content`).
+- **RAG uses the history**: the last `web_chat.window_size` messages (capped by
+  `local_rag.history_max_chars`) are inserted into the prompt before the current question, so the local model
+  remembers the dialogue. The same history (including `meta.sources`) is used to resolve follow-up references
+  before retrieval.
+- **The UI restores history on reload**: the session id and the selected mode are kept in `localStorage`, and
+  on page load the messages are fetched from `GET /api/history` and rendered with a per-answer badge
+  (**рецепты** / **без RAG**) and, for RAG turns, the sources. `/api/reset` clears the session.
+- **Default mode is «рецепты»** when the index is available (falls back to «не использовать RAG» otherwise).
+  The server-side API default stays `use_rag=false` for backward compatibility; the UI always sends the choice.
+
+## What was added
+
+- `agent/local_rag.py` — `LocalRagStubClient`, `LocalRagSystem`, `build_local_rag_client`, `timed_rag_query`, `answer_self_consistency`, `compare_local_vs_cloud`, `render_local_rag_markdown`.
+- `agent/local_rag_scenarios.py` — offline/live scenario + local-vs-cloud comparison + RAG web-chat HTTP checks (including an off-topic question that must yield a refusal with no sources).
+- `agent/web_chat.py` — per-message RAG mode and local/cloud model choice (UI dropdowns, `use_rag`/`used_rag`, `model_source`, `rag_available`/`rag`/`rag_error`, `cloud`/`cloud_model`) **plus dialogue history**: all channels share one `Conversation`, RAG replies are recorded with compact metadata (`meta.mode`, `meta.model_source` + sources), previous turns are fed into the prompt, and the UI restores the session + selected model/mode from `localStorage` with per-answer badges and sources; fully backward compatible with Day 27.
+- `agent/conversation.py` — `append(role, content, meta=...)` to persist per-message metadata.
+- `agent/agent.py` — `context_messages` strips everything except `role`/`content` before the LLM call.
+- `agent/rag.py` — `build_rag_messages(..., history=..., extra_instruction=...)`.
+- `agent/local_rag.py` — `select_history` (window + char budget), `is_generic_query`/`has_meta_leak`, generic-query softening, and refusal cleanup.
+- `agent/local_rag.py` — category browse (`detect_category`, `retrieve_by_category`, `is_browse_query`), specific-dish guard (`_matches_specific_dish`), sentence-level meta-leak cleanup (`strip_meta_leak`, applied to every answer), and follow-up resolution (`is_followup_query`, `_extract_ordinal`, `_heuristic_resolve_reference`, `resolve_followup_query`, route `followup`, `CLARIFY_REFERENCE_MESSAGE`).
+- `web_local.py` — RAG and the cloud model available by default, `--no-rag` / `--no-cloud` to disable them, plus `--dataset`, `--strategy`, `--top-k`, `--index-dir` flags.
+- `config.one.json` / `config.example.json` — `local_rag` section now includes `relevance_threshold`, `history_max_chars`, `generic_threshold`, `generic_min_sources`, `category_suggestions`.
+
+---
+
 # Day 27: Local LLM in a Real Application — Web Chat
 
 A small **Flask web application** that sends chat messages to the **local** LLM
 from Day 26 (`llama-server`, OpenAI-compatible `/v1` endpoint) and renders the
-replies in the browser. No cloud models, no API keys — the whole path is
-**browser → Flask → local `llama-server`**.
+replies in the browser. The local path needs no cloud models or API keys —
+**browser → Flask → local `llama-server`** — and an optional **cloud** model
+(any OpenAI-compatible API from the config) can be selected in the UI.
 
 The web layer is a thin adapter over the existing `Agent` / `Conversation`
 (unchanged): sessions persist to `history/<session_id>.json`, and a sliding
@@ -111,11 +266,11 @@ whole app be verified without building llama.cpp or downloading a model.
 
 | Component | Module | Responsibility |
 | --- | --- | --- |
-| **`WebChatBackend`** | `agent/web_chat.py` | Owns the local server lifecycle (start/stop) and the in-memory session registry; `chat()`, `reset()`, `status()`, `history()` |
-| **`ChatSession`** | `agent/web_chat.py` | One dialogue: a `Conversation` + an `Agent` (sliding window, local context limit) with a per-session lock |
+| **`WebChatBackend`** | `agent/web_chat.py` | Owns the local server / cloud client lifecycle and the in-memory session registry; `chat()`, `reset()`, `status()`, `history()`, `model_sources` |
+| **`ChatSession`** | `agent/web_chat.py` | One dialogue: a `Conversation` + per-source `ChatChannel`s (`local`/`cloud`, each with an `Agent` + optional RAG system) under a per-session lock |
 | **`StubLLMClient`** | `agent/web_chat.py` | Offline LLM client compatible with `Agent` (`.config` + `.complete()`), backed by `StubLocalLLM` |
 | **`create_app`** | `agent/web_chat.py` | Flask app: `GET /` (HTML chat), `GET /api/status`, `POST /api/chat`, `POST /api/reset`, `GET /api/history` |
-| **Entrypoint** | `web_local.py` | CLI: starts the backend and serves the web app (`--offline`, `--host`, `--port`, `--llm-port`, `--model`, `--no-browser`) |
+| **Entrypoint** | `web_local.py` | CLI: starts the backend and serves the web app (`--offline`, `--no-cloud`, `--no-rag`, `--host`, `--port`, `--llm-port`, `--model`, `--no-browser`) |
 | **Scenario** | `agent/web_chat_scenarios.py` | Offline/live verification via Flask's test client; writes `history/web_chat/report.md` + `results.json` |
 
 ## Run
@@ -158,16 +313,16 @@ Example offline verification run:
 | Method | Path | Body / Query | Returns |
 | --- | --- | --- | --- |
 | `GET` | `/` | — | HTML chat UI |
-| `GET` | `/api/status` | — | `{ready, mode, model, endpoint, sessions}` |
-| `POST` | `/api/chat` | `{message, session_id?}` | `{reply, session_id, model}` |
+| `GET` | `/api/status` | — | `{ready, mode, model, local_model, cloud, cloud_model, sources, endpoint, sessions, rag}` |
+| `POST` | `/api/chat` | `{message, session_id?, use_rag?, model_source?}` | `{reply, session_id, model, model_source, sources, used_rag, rag_available}` |
 | `POST` | `/api/reset` | `{session_id?}` | `{session_id, ok}` |
 | `GET` | `/api/history` | `?session_id=` | `{session_id, messages}` |
 
 ## What was added
 
-- `agent/web_chat.py` — `StubLLMClient`, `ChatSession`, `WebChatBackend`, `create_app`, and the inline HTML chat page.
-- `web_local.py` — Flask entrypoint over the local `llama-server`.
-- `agent/web_chat_scenarios.py` — offline/live end-to-end verification + report.
+- `agent/web_chat.py` — `StubLLMClient`, `ChatChannel`, `ChatSession`, `WebChatBackend`, `create_app`, and the inline HTML chat page (model + RAG selectors).
+- `web_local.py` — Flask entrypoint over the local `llama-server` with an optional cloud model.
+- `agent/web_chat_scenarios.py` — offline/live end-to-end verification + report (local/cloud routing).
 - `config.one.json` / `config.example.json` — new `web_chat` section (`host`, `port`, `window_size`, `max_sessions`).
 
 ---

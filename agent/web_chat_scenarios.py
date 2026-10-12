@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Day 27: сквозная проверка веб-чата с локальной LLM.
+"""Day 27: сквозная проверка веб-чата с локальной и облачной LLM.
 
 Проверяет критерии задачи:
-1. веб-приложение отдаёт страницу чата (``GET /``);
-2. запрос уходит в локальную модель и ответ возвращается (``POST /api/chat``);
+1. веб-приложение отдаёт страницу чата с выбором модели и RAG (``GET /``);
+2. запрос уходит в выбранную модель (local/cloud) и ответ возвращается (``POST /api/chat``);
 3. диалог сохраняется между ходами, а история очищается (``/api/reset``);
-4. приложение работает **без облачных моделей** (по умолчанию — офлайн-стаб).
+4. маршрутизация local/cloud проверяется на детерминированном стабе облака
+   (по умолчанию — офлайн-режим без обращения к сети).
 
 Запуск::
 
@@ -27,7 +28,7 @@ from dataclasses import asdict, dataclass
 
 from agent.config import load_config
 from agent.local_llm import REPO_ROOT, LocalLLMError
-from agent.web_chat import WebChatBackend, create_app
+from agent.web_chat import StubLLMClient, WebChatBackend, create_app
 
 MATH_PROMPT = "Сколько будет 2+2? Ответь одним числом."
 GREETING_PROMPT = "Привет!"
@@ -65,11 +66,15 @@ def _run_checks(backend: WebChatBackend) -> list[CheckResult]:
     page = client.get("/")
     elapsed = (time.perf_counter() - started) * 1000
     html = page.get_data(as_text=True)
+    has_selectors = 'id="source"' in html and 'id="mode"' in html
     results.append(
         CheckResult(
-            "Веб-приложение отдаёт страницу чата",
-            page.status_code == 200 and "Локальный LLM-чат" in html,
-            f"GET / → HTTP {page.status_code}, {len(html)} байт HTML",
+            "Веб-приложение отдаёт страницу чата с выбором модели и RAG",
+            page.status_code == 200
+            and "локальная и облачная модель" in html
+            and has_selectors,
+            f"GET / → HTTP {page.status_code}, {len(html)} байт HTML, "
+            f"выбор модели/RAG: {'да' if has_selectors else 'нет'}",
             elapsed,
         )
     )
@@ -81,6 +86,15 @@ def _run_checks(backend: WebChatBackend) -> list[CheckResult]:
             bool(status.get("ready")),
             f"mode={status.get('mode')}, model={status.get('model')}, "
             f"endpoint={status.get('endpoint')}",
+        )
+    )
+
+    results.append(
+        CheckResult(
+            "Статус бэкенда: облачный источник доступен",
+            status.get("cloud") is True and "cloud" in (status.get("sources") or []),
+            f"cloud={status.get('cloud')}, cloud_model={status.get('cloud_model')}, "
+            f"sources={status.get('sources')}",
         )
     )
 
@@ -108,14 +122,28 @@ def _run_checks(backend: WebChatBackend) -> list[CheckResult]:
         )
     )
 
+    cloud_reply = client.post(
+        "/api/chat",
+        json={"session_id": session_id, "message": MATH_PROMPT, "model_source": "cloud"},
+    ).get_json()
+    results.append(
+        CheckResult(
+            "Запрос маршрутизируется в облачную модель",
+            cloud_reply.get("model_source") == "cloud"
+            and bool(cloud_reply.get("reply")),
+            f"model_source={cloud_reply.get('model_source')}, "
+            f"model={cloud_reply.get('model')}, reply={_preview(cloud_reply.get('reply'))}",
+        )
+    )
+
     history = client.get(f"/api/history?session_id={session_id}").get_json()
     messages = history.get("messages", [])
     results.append(
         CheckResult(
             "История диалога сохраняется между ходами",
-            len(messages) == 4,
+            len(messages) == 6,
             f"сообщений в сессии: {len(messages)} "
-            f"(user/assistant × 2)",
+            f"(user/assistant × 3)",
         )
     )
 
@@ -146,11 +174,12 @@ def _render_markdown(
 ) -> str:
     passed = sum(1 for r in results if r.passed)
     lines = [
-        "# Day 27 — Веб-чат с локальной LLM: отчёт проверки",
+        "# Day 27 — Веб-чат с локальной и облачной LLM: отчёт проверки",
         "",
         f"- Режим: {'офлайн (стаб)' if backend.offline else 'живой (llama.cpp)'}",
-        f"- Модель: `{backend.model_label}`",
-        f"- Endpoint модели: `{backend.endpoint}`",
+        f"- Локальная модель: `{backend.model_label}`",
+        f"- Облачная модель: `{backend.cloud_model_label or '—'}`",
+        f"- Endpoint локальной модели: `{backend.endpoint}`",
         "",
         f"**Итог: {passed}/{len(results)} проверок пройдено.**",
         "",
@@ -166,7 +195,9 @@ def _render_markdown(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Day 27: веб-чат с локальной LLM")
+    parser = argparse.ArgumentParser(
+        description="Day 27: веб-чат с локальной и облачной LLM"
+    )
     parser.add_argument("--offline", action="store_true", help="Проверка на стабе (по умолчанию)")
     parser.add_argument("--live", action="store_true", help="Проверка на живом llama-server")
     parser.add_argument("--model", default=None, help="Путь к GGUF-модели")
@@ -177,7 +208,7 @@ def main() -> int:
     offline = not args.live
 
     print("=" * 78)
-    print("🌐 ДЕНЬ 27: ВЕБ-ЧАТ С ЛОКАЛЬНОЙ LLM")
+    print("🌐 ДЕНЬ 27: ВЕБ-ЧАТ С ЛОКАЛЬНОЙ И ОБЛАЧНОЙ LLM")
     print("=" * 78)
     print(f"Режим: {'офлайн-стаб' if offline else 'живой llama.cpp'}\n")
 
@@ -188,6 +219,9 @@ def main() -> int:
             model_path=args.model,
             port=args.llm_port,
             history_dir=history_dir,
+            # В офлайн-режиме облако недоступно; подменяем детерминированным
+            # стабом, чтобы проверить маршрутизацию local/cloud без сети.
+            cloud_client=StubLLMClient("cloud-stub") if offline else None,
         )
         try:
             backend.start()

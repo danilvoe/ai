@@ -2,7 +2,7 @@
 
 ## 1. Project Context & Branch Architecture
 
-This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 27**.
+This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 28**.
 
 - **Branch-per-Lesson Structure**: Each Git branch (`day2`, `day3`, ..., `day27`, `master`) represents the code state at that specific lesson.
 - **Cumulative Codebase**: The project evolves incrementally. For example, `day25` contains RAG chat with task state memory, while `day10` only contains early context management.
@@ -44,7 +44,7 @@ To prevent massive token consumption and context window exhaustion, any coding a
 
 ---
 
-## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 27)
+## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 28)
 
 Use this table to jump directly to the relevant file instead of traversing the filesystem:
 
@@ -75,7 +75,8 @@ Use this table to jump directly to the relevant file instead of traversing the f
 | **Day 24** | Grounded RAG (Citations, anti-hallucination threshold, quote alignment) | `agent/grounding.py`, `agent/grounding_scenarios.py` | `python3 -m agent.grounding_scenarios --no-llm` |
 | **Day 25** | Mini-Chat CLI with RAG, Task State memory & verified sources | `agent/rag_chat.py`, `agent/rag_chat_cli.py`, `agent/rag_chat_scenarios.py`, `chat_rag.py` | `python3 -m agent.rag_chat_scenarios --no-llm` |
 | **Day 26** | Local LLM via llama.cpp (build, CLI + OpenAI-compatible server) | `agent/local_llm.py`, `agent/local_llm_scenarios.py`, `chat_local.py`, `scripts/setup_llama_cpp.sh` | `python3 -m agent.local_llm_scenarios --offline` |
-| **Day 27** | Web chat app on the local LLM (Flask, no cloud models) | `agent/web_chat.py`, `agent/web_chat_scenarios.py`, `web_local.py` | `python3 -m agent.web_chat_scenarios --offline` |
+| **Day 27** | Web chat app (Flask) over the local LLM, with optional cloud model | `agent/web_chat.py`, `agent/web_chat_scenarios.py`, `web_local.py` | `python3 -m agent.web_chat_scenarios --offline` |
+| **Day 28** | Fully local RAG: local retrieval (FAISS) + local LLM generation, with local-vs-cloud comparison | `agent/local_rag.py`, `agent/local_rag_scenarios.py`, `agent/web_chat.py` (per-message RAG + local/cloud model selectors in UI), `web_local.py` | `python3 -m agent.local_rag_scenarios --offline` |
 
 ---
 
@@ -113,7 +114,8 @@ When working on a specific subsystem, target these exact modules:
 - **Scenario**: `agent/local_llm_scenarios.py` (offline stub + live llama-cli/llama-server checks)
 - **Bootstrap**: `scripts/setup_llama_cpp.sh` (build llama.cpp + download GGUF into `history/`)
 - **Chat entrypoint**: `chat_local.py`
-- **Web chat (Day 27)**: `agent/web_chat.py` (`WebChatBackend`, `ChatSession`, `StubLLMClient`, `create_app`), `web_local.py`
+- **Web chat (Day 27)**: `agent/web_chat.py` (`WebChatBackend`, `ChatChannel`, `ChatSession`, `StubLLMClient`, `create_app`), `web_local.py`; **local/cloud model selection** — `ChatSession` holds `local`/`cloud` `ChatChannel`-s sharing one `Conversation`; cloud channel is built by `_build_cloud_client` only when config has `api_key`+`model` (never in `--offline`); UI `<select id="source">` (локальная/облачная) next to `<select id="mode">`, `/api/chat` takes `model_source`, `GET /api/status` reports `cloud`/`cloud_model`/`sources`, `--no-cloud` disables it.
+- **Fully local RAG (Day 28)**: `agent/local_rag.py` (`LocalRagStubClient`, `LocalRagSystem`, `build_local_rag_client`, `compare_local_vs_cloud`; relevance threshold 0.33 — low-score chunks dropped, refusal hides sources; `is_generic_query` softens threshold for "что можно приготовить?"; `select_history` window+budget). **Routing (Day 28+)**: browse/category queries — `detect_category` (word-prefix stem match over multi-valued `category` metadata) + `retrieve_by_category` (up to `local_rag.category_suggestions` distinct recipes ranked by cosine, category as filter), guarded by `_matches_specific_dish` so a named dish stays specific; «топ N»/lists → generic route. `strip_meta_leak` removes meta-leak sentences from **every** answer. **Follow-ups (Day 28+)**: `is_followup_query` + `_extract_ordinal` + `_heuristic_resolve_reference` resolve "подробней про 2 позицию"/"второй" against the previous turn's `meta.sources`; `resolve_followup_query` does an LLM query-rewrite with history (`FOLLOWUP_REWRITE_SYSTEM_PROMPT`) for pronouns/pointers with the heuristic fallback; resolved query is re-retrieved and answered on route `followup`; unresolvable references ask to clarify (`CLARIFY_REFERENCE_MESSAGE`) and generic padding no longer injects below-floor junk. `agent/local_rag_scenarios.py`, web RAG via a UI mode selector ("не использовать RAG" / "рецепты", default **рецепты** when the index is available) in `web_local.py`. **Dialogue history**: web chat shares one `Conversation` across both modes; RAG replies are stored with compact `meta` (mode + sources, stripped before the LLM call in `Agent.context_messages`); previous turns fed into the prompt (`agent/rag.py` `build_rag_messages(history=..., extra_instruction=...)`); UI keeps session+mode in `localStorage` and restores history via `GET /api/history` with per-answer badges (`Conversation.append(role, content, meta=...)`).
 
 ---
 
@@ -127,6 +129,9 @@ python3 -m agent.local_llm_scenarios --offline
 
 # Day 27 Web chat with local LLM verification - offline stub, no model/network
 python3 -m agent.web_chat_scenarios --offline
+
+# Day 28 Fully local RAG (local retrieval + local LLM) verification - offline stub
+python3 -m agent.local_rag_scenarios --offline
 
 # Day 25 RAG Chat verification
 python3 -m agent.rag_chat_scenarios --no-llm

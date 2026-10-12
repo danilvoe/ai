@@ -185,8 +185,17 @@ def build_rag_messages(
     question: str,
     sources: list[RagSource],
     max_chars: int = 6000,
+    history: list[dict[str, str]] | None = None,
+    extra_instruction: str | None = None,
 ) -> list[dict[str, str]]:
-    """Формирует список сообщений (messages) для RAG-запроса."""
+    """Формирует список сообщений (messages) для RAG-запроса.
+
+    ``history`` — предыдущие реплики диалога (``{"role", "content"}``), которые
+    вставляются между system-сообщением и текущим вопросом, чтобы модель
+    учитывала контекст беседы. ``extra_instruction`` — дополнительная инструкция,
+    добавляемая к пользовательскому сообщению (например, для общих вопросов).
+    По умолчанию ни история, ни доп. инструкция не передаются.
+    """
     retriever_dummy = RagRetriever(index=None, top_k=len(sources))  # type: ignore[arg-type]
     context_text = retriever_dummy.build_context(sources, max_chars=max_chars)
 
@@ -199,11 +208,17 @@ def build_rag_messages(
         f"{question}\n\n"
         f"Пожалуйста, дай точный ответ строго по контексту с указанием источников."
     )
+    if extra_instruction:
+        user_content = f"{user_content}\n\n{extra_instruction}"
 
-    return [
-        {"role": "system", "content": RAG_SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
-    ]
+    messages: list[dict[str, str]] = [{"role": "system", "content": RAG_SYSTEM_PROMPT}]
+    for item in history or []:
+        role = item.get("role")
+        content = item.get("content")
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": str(content)})
+    messages.append({"role": "user", "content": user_content})
+    return messages
 
 
 def build_plain_messages(question: str) -> list[dict[str, str]]:

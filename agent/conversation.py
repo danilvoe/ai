@@ -192,9 +192,16 @@ class Conversation:
                 indent=2,
             )
 
-    def append(self, role: str, content: str) -> None:
-        """Добавляет сообщение в активную ветку (или общую часть) и сохраняет."""
+    def append(self, role: str, content: str, meta: dict | None = None) -> None:
+        """Добавляет сообщение в активную ветку (или общую часть) и сохраняет.
+
+        ``meta`` — необязательные метаданные сообщения (например, режим ответа
+        и найденные источники для веб-чата). Они сохраняются в файл сессии, но
+        перед отправкой в модель отбрасываются (см. Agent.context_messages).
+        """
         message = {"role": role, "content": content}
+        if meta:
+            message["meta"] = dict(meta)
         if self._active_branch is not None:
             self._branches[self._active_branch]["messages"].append(message)
         else:
