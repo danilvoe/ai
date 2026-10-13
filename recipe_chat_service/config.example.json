@@ -1,0 +1,46 @@
+{
+  "database": {
+    "path": "data/service.db"
+  },
+  "index": {
+    "dir": "index",
+    "dataset": "recipt_all",
+    "strategy": "structural",
+    "top_k": 5
+  },
+  "local_rag": {
+    "temperature": 0.2,
+    "max_context_chars": 6000,
+    "relevance_threshold": 0.33,
+    "generic_threshold": 0.25,
+    "generic_min_sources": 3,
+    "category_suggestions": 5,
+    "list_max": 10,
+    "history_max_messages": 8,
+    "history_max_chars": 2000,
+    "planner_enabled": true,
+    "planner_min_confidence": 0.5,
+    "category_menu_size": 8
+  },
+  "local_llm": {
+    "enabled": true,
+    "llama_dir": "../history/llama.cpp",
+    "model_path": "../history/models/qwen2.5-3b-instruct-q4_k_m.gguf",
+    "host": "127.0.0.1",
+    "port": 8080,
+    "ctx_size": 8192,
+    "threads": 4,
+    "n_gpu_layers": 0,
+    "max_response_tokens": 1024,
+    "model_label": "local-llm"
+  },
+  "web": {
+    "host": "127.0.0.1",
+    "port": 5000,
+    "debug": false,
+    "allow_reindex": false
+  },
+  "security": {
+    "secret_key": ""
+  }
+}

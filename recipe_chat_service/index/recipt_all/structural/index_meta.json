@@ -1,0 +1,11 @@
+{
+  "strategy": "structural",
+  "source": "recipt_all",
+  "created_at": 1791187707.407997,
+  "dim": 256,
+  "embedder": "hashing_256d",
+  "total_chunks": 6403,
+  "saved_at": 1791187707.5930686,
+  "index_file": "faiss.index",
+  "chunks_file": "chunks.json"
+}

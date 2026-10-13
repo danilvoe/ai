@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Регистрация — Рецепты{% endblock %}
+{% block body_class %}auth-page{% endblock %}
+{% block body %}
+<main class="auth-card">
+  <a class="brand auth-brand" href="https://grill-bbq.ru" target="_blank"
+     rel="noopener noreferrer" title="grill-bbq.ru">
+    <img src="{{ url_for('static', filename='logo.svg') }}"
+         alt="grill-bbq.ru" class="brand-logo">
+  </a>
+  <h1>Регистрация</h1>
+  <p class="muted">Создайте аккаунт, чтобы вести чаты с рецептами.</p>
+  <form id="register-form" autocomplete="on">
+    <label>Имя пользователя
+      <input type="text" name="username" id="username" required minlength="3" autofocus>
+    </label>
+    <label>Пароль (минимум 6 символов)
+      <input type="password" name="password" id="password" required minlength="6">
+    </label>
+    <button type="submit">Создать аккаунт</button>
+    <p class="error" id="error" hidden></p>
+  </form>
+  <p class="muted">Уже есть аккаунт? <a href="{{ url_for('pages.login') }}">Войти</a></p>
+</main>
+{% endblock %}

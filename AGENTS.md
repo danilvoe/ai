@@ -78,6 +78,7 @@ Use this table to jump directly to the relevant file instead of traversing the f
 | **Day 27** | Web chat app (Flask) over the local LLM, with optional cloud model | `agent/web_chat.py`, `agent/web_chat_scenarios.py`, `web_local.py` | `python3 -m agent.web_chat_scenarios --offline` |
 | **Day 28** | Fully local RAG: local retrieval (FAISS) + local LLM generation, with local-vs-cloud comparison | `agent/local_rag.py`, `agent/local_rag_scenarios.py`, `agent/web_chat.py` (per-message RAG + local/cloud model selectors in UI), `web_local.py` | `python3 -m agent.local_rag_scenarios --offline` |
 | **Day 29** | Local LLM optimization for the recipe task: params (temperature/max tokens/context window), quantization (Q4_K_M vs weaker Q2_K), case-tuned prompt template; before/after quality/speed/resources comparison + web settings panel | `agent/optimization.py`, `agent/optimization_scenarios.py`, `agent/web_chat.py` (optimization panel + `/api/settings`), `agent/rag.py`, `agent/local_rag.py`, `agent/agent.py`, `scripts/setup_llama_cpp.sh` (`--quant all`) | `python3 -m agent.optimization_scenarios --offline` |
+| **Day 30** | Final project: multi-user Recipe Chat Service (Flask + SQLite, auth, many chats/user, local RAG + history, self-contained `core/`, index copy/rebuild) | `recipe_chat_service/run.py`, `recipe_chat_service/rebuild_index.py`, `recipe_chat_service/core/` (`llm_client`, `local_llm`, `indexing`, `rag`, `refusal`, `local_rag`, `index_build`), `recipe_chat_service/app/` (`config`, `db`, `security`, `engine`, `chat_service`, `routes/`, templates/static), `recipe_chat_service/scenarios/service_scenarios.py` | `cd recipe_chat_service && python3 -m scenarios.service_scenarios --offline` |
 
 ---
 
@@ -128,6 +129,9 @@ Run these exact commands to verify your changes without incurring API costs or w
 ```bash
 # Day 29 Local LLM optimization verification - offline stub, no model/network
 python3 -m agent.optimization_scenarios --offline
+
+# Day 30 Recipe Chat Service verification - offline stub e2e, no model/network
+cd recipe_chat_service && python3 rebuild_index.py --copy && python3 -m scenarios.service_scenarios --offline
 
 # Day 26 Local LLM (llama.cpp) verification - offline stub, no build/network
 python3 -m agent.local_llm_scenarios --offline

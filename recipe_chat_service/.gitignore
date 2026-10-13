@@ -1,0 +1,14 @@
+# Runtime-данные сервиса
+data/
+config.json
+
+# Тяжёлые артефакты индекса (пересобираются из датасета или копируются)
+index/**/faiss.index
+index/**/chunks.json
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/

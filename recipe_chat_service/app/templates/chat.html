@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Чаты с рецептами{% endblock %}
+{% block body_class %}chat-page{% endblock %}
+{% block body %}
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <a class="brand" href="https://grill-bbq.ru" target="_blank"
+         rel="noopener noreferrer" title="grill-bbq.ru">
+        <img src="{{ url_for('static', filename='logo.svg') }}"
+             alt="grill-bbq.ru" class="brand-logo">
+      </a>
+      <button id="logout" class="ghost" title="Выйти">Выйти</button>
+    </div>
+    <button id="new-chat" class="primary">+ Новый чат</button>
+    <ul id="chat-list" class="chat-list"></ul>
+    <div class="status" id="status">загрузка…</div>
+  </aside>
+
+  <main class="chat">
+    <header class="chat-head">
+      <h2 id="chat-title">Выберите чат</h2>
+      <div class="chat-actions">
+        <label class="switch">
+          <input type="checkbox" id="use-rag" checked>
+          <span>рецепты (RAG)</span>
+        </label>
+        <button id="reset-chat" class="ghost" title="Очистить историю">Очистить</button>
+      </div>
+    </header>
+
+    <section id="messages" class="messages">
+      <div class="empty">Создайте чат и задайте вопрос по базе рецептов.</div>
+    </section>
+
+    <form id="composer" class="composer">
+      <textarea id="message" rows="1" placeholder="Спросите про рецепт…" required></textarea>
+      <button type="submit" class="primary">Отправить</button>
+    </form>
+  </main>
+</div>
+{% endblock %}
