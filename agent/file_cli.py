@@ -136,7 +136,18 @@ def handle_command(raw: str, assistant: FileAssistant, state: dict) -> bool:
         if not arg:
             print("ℹ️ Укажите запрос, например /search McpToolRuntime.\n")
             return True
-        _print_result(assistant.run(f"найди, где используется {arg}", symbol=arg))
+        query, _, glob = arg.partition(" ")
+        data = assistant.search_files(query, glob=glob.strip(), limit=100)
+        if data.get("error"):
+            print(f"⚠️ Ошибка: {data['error']}\n")
+        else:
+            print(f"\n🔍 «{query}»: {data.get('total_matches', 0)} совпадений "
+                  f"в {data.get('total_files', 0)} файлах")
+            for entry in data.get("files", []):
+                print(f"  {entry.get('file')} ({entry.get('count')}):")
+                for match in entry.get("matches", [])[:5]:
+                    print(f"    {match.get('line')}: {str(match.get('text', '')).strip()[:120]}")
+            print()
         return True
 
     if action == "read":
