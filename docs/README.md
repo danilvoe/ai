@@ -1,9 +1,9 @@
 # Документация проекта AI Advent
 
 Учебный репозиторий по курсу **AI Advent (LLM & Agents)** — практические решения
-для Дней 1–32. Каждая git-ветка (`day2`, `day3`, …, `day32`, `master`) фиксирует
+для Дней 1–34. Каждая git-ветка (`day2`, `day3`, …, `day34`, `master`) фиксирует
 состояние кода на соответствующем уроке, поэтому проект развивается накопительно:
-`day32` содержит всё, что было в предыдущих днях.
+`day34` содержит всё, что было в предыдущих днях.
 
 ## Разделы документации
 
@@ -46,12 +46,40 @@ python3 review_pr.py --base HEAD~1 --head HEAD --offline   # локальный 
 python3 -m agent.review_scenarios --offline                # офлайн-проверка
 ```
 
+## Ассистент поддержки (День 33)
+
+Ассистент отвечает на вопросы о продукте по FAQ (RAG) и учитывает контекст
+пользователя и тикета из JSON-CRM через MCP-сервер
+[`mcp/support_server.py`](../mcp/support_server.py).
+
+```bash
+python3 -m agent.support_faq --build       # индекс FAQ
+python3 chat_support.py --offline --question "Почему не работает авторизация?" --ticket T-1024
+python3 -m agent.support_scenarios --offline
+```
+
+## Ассистент файловых операций (День 34)
+
+Ассистент получает **цель** и сам выполняет реальные операции с файлами через
+MCP-сервер [`mcp/fs_server.py`](../mcp/fs_server.py): читает файлы, ищет по
+нескольким файлам, анализирует содержимое и создаёт/изменяет файлы. По умолчанию
+изменения выводятся как diff (запись — с флагом `--apply`). Поддерживаются цели:
+поиск использований символа, генерация файла (каталог/ADR/changelog), проверка
+инвариантов, обновление документации по коду и подготовка diff.
+
+```bash
+python3 chat_files.py --offline --goal "найди, где используется McpToolRuntime"
+python3 chat_files.py --offline --apply --goal "сгенерируй каталог MCP-серверов"
+python3 -m agent.file_scenarios --offline
+```
+
 ## Обзор репозитория
 
 - **`agent/`** — ядро: агент и CLI, память, task state, MCP-клиент, RAG-подсистема
   (индексация, поиск, реранкинг, grounding), локальная LLM, веб-чат.
 - **`mcp/`** — автономные FastMCP-серверы: `gitflic_server`, `pipeline_server`,
-  `report_server`, `project_server`, `review_server`.
+  `report_server`, `project_server`, `review_server`, `support_server`,
+  `fs_server`.
 - **`recipe_chat_service/`** — итоговый проект Дня 30: многопользовательский
   сервис рецептов на Flask + SQLite с самодостаточной папкой `core/`.
 - **`scripts/`** — вспомогательные скрипты: сборка `llama.cpp`, генерация

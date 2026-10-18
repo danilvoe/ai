@@ -2,7 +2,7 @@
 
 ## 1. Project Context & Branch Architecture
 
-This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 33**.
+This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 34**.
 
 - **Branch-per-Lesson Structure**: Each Git branch (`day2`, `day3`, ..., `day27`, `master`) represents the code state at that specific lesson.
 - **Cumulative Codebase**: The project evolves incrementally. For example, `day25` contains RAG chat with task state memory, while `day10` only contains early context management.
@@ -44,7 +44,7 @@ To prevent massive token consumption and context window exhaustion, any coding a
 
 ---
 
-## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 33)
+## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 34)
 
 Use this table to jump directly to the relevant file instead of traversing the filesystem:
 
@@ -82,6 +82,7 @@ Use this table to jump directly to the relevant file instead of traversing the f
 | **Day 31** | Developer assistant: RAG over project docs (README + `docs/`) + MCP project context (git branch/files/commits/diff) + `/help` command; docs auto-generation | `docs/*.md` (architecture, data-schemas, api, development, generated modules), `scripts/generate_docs.py`, `agent/project_docs.py`, `mcp/project_server.py`, `agent/dev_assistant.py`, `agent/dev_assistant_cli.py`, `chat_dev.py`, `agent/dev_assistant_scenarios.py` | `python3 -m agent.dev_assistant_scenarios --offline` |
 | **Day 32** | Automated PR code review: pipeline gets PR diff + changed files (MCP), uses RAG over docs **and code**, returns review (bugs / architecture issues / recommendations); GitHub Action on `pull_request` + PR comment | `agent/code_index.py`, `mcp/review_server.py`, `agent/code_review.py`, `agent/review_cli.py`, `review_pr.py`, `agent/review_scenarios.py`, `.github/workflows/code-review.yml`, `requirements.txt` | `python3 -m agent.review_scenarios --offline` |
 | **Day 33** | User support assistant: FAQ knowledge base + RAG over it, user/ticket context from a JSON CRM via MCP, answers product questions with ticket data («Почему не работает авторизация?») | `mcp/support_server.py`, `mcp/support_data/` (`faq.json`, `users.json`, `tickets.json`), `agent/support_faq.py`, `agent/support_assistant.py`, `agent/support_cli.py`, `chat_support.py`, `agent/support_scenarios.py` | `python3 -m agent.support_scenarios --offline` |
+| **Day 34** | File-operations assistant: goal-level tasks over project files via MCP — find usages, search/analyze across files, generate/update files (catalog/ADR/changelog), invariant checks, prepare diff; dry-run by default, sandbox for reproducible runs | `mcp/fs_server.py`, `agent/file_assistant.py`, `agent/file_cli.py`, `chat_files.py`, `agent/file_scenarios.py` | `python3 -m agent.file_scenarios --offline` |
 
 ---
 
@@ -151,6 +152,14 @@ When working on a specific subsystem, target these exact modules:
 - **Scenario**: `agent/support_scenarios.py` (`--offline`) — FAQ recall (16/16), MCP user/ticket/list/search/context checks, anchor case (ticket status/version in answer), negative control; report in `history/support/`.
 - **Config**: `support` section (`faq_path`, `index_dir`, `dataset`, `strategy`, `top_k`, `min_score`, `relevance_threshold`, `temperature`, `max_context_chars`, `chunk_size`, `overlap`, `report_dir`, `support_server`).
 
+### I. File-Operations Assistant (Day 34)
+- **FS MCP**: `mcp/fs_server.py` (`FastMCP` "filesystem", local, path-jail via `FS_ROOT`, ignores `.git`/`history`/`__pycache__` on traversal); tools `list_files`, `read_file` (`start_line`/`end_line`), `search_files` (multi-file, grouped `{file, count, matches}`), `analyze_file` (`ast` for `.py`, headings for `.md`), `file_info`, `write_file` (`overwrite`/`create_dirs`), `edit_file` (`old`→`new`, `count`), `make_diff` (git or `baseline_root` via `difflib`); `--check` mode.
+- **Assistant**: `agent/file_assistant.py` (`classify_goal` → `find_usages`/`generate_file`/`update_docs`/`check_invariants`/`prepare_diff`; `FileAction`, `FileFinding`, `FileTaskResult`; `FileAssistant.run(goal, apply=...)`; `FileAssistantStubClient`; `render_document`; `_python_invariants` via `ast`; `build_fs_runtime`, `build_file_assistant`). The assistant itself chooses files: `search_files`+`read_file` for usages, `list_files`+`analyze_file`+`read_file` for generation, `list_files`+`read_file`+`analyze_file` for invariants.
+- **Safety**: writes are dry-run by default (only unified diff); real writes only when `apply=True`/`--apply`. `_stage_write` reads the original first and always emits a diff artifact.
+- **CLI + entrypoint**: `agent/file_cli.py`, `chat_files.py` (`/find`, `/search`, `/read`, `/analyze`, `/files`, `/generate`, `/update`, `/check`, `/diff`, `/apply on|off`, `/help`; `--offline`, `--goal`, `--workspace`, `--apply`, `--no-mcp`).
+- **Scenario**: `agent/file_scenarios.py` (`--offline`) — 4 sandboxed scenarios (find usages over ≥2–3 files; generate catalog from 7 `mcp/*_server.py` + reproducibility check; invariant detection on a planted sandbox; update docs from code change with 2-file baseline diff); sandbox `history/day34/`, report in `history/file_assistant/`.
+- **Config**: `file_assistant` section (`enabled`, `workspace_root`, `apply`, `max_chars`, `report_dir`, `fs_server{enabled, command, args, timeout}`).
+
 ---
 
 ## 6. Verification Cheat Sheet (Fast & Zero API Token Cost)
@@ -158,6 +167,11 @@ When working on a specific subsystem, target these exact modules:
 Run these exact commands to verify your changes without incurring API costs or waiting for network roundtrips:
 
 ```bash
+# Day 34 File-operations assistant (MCP read/search/analyze/write) verification - offline stub, no model/network
+python3 mcp/fs_server.py --check --files --search "build_support_runtime" --path agent
+python3 -m agent.file_scenarios --offline
+python3 chat_files.py --offline --goal "найди, где используется McpToolRuntime"
+
 # Day 33 User support assistant (FAQ RAG + MCP ticket context) verification - offline stub, no model/network
 python3 mcp/support_server.py --check --ticket T-1024 --user 1 --search "авторизация"
 python3 -m agent.support_faq --build

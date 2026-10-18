@@ -75,6 +75,20 @@
 - **`mcp/review_server.py`** — diff, изменённые файлы, содержимое, метаданные PR.
 - **`.github/workflows/code-review.yml`** — пайплайн GitHub Action на `pull_request`.
 
+### I. Ассистент поддержки (День 33)
+- **`agent/support_faq.py`** — RAG-индекс по FAQ (`mcp/support_data/faq.json`).
+- **`agent/support_assistant.py`** — ответы по FAQ + контекст тикета/пользователя.
+- **`agent/support_cli.py`** / **`chat_support.py`** — CLI поддержки.
+- **`mcp/support_server.py`** — CRM-инструменты (пользователи, тикеты, поиск).
+
+### J. Ассистент файловых операций (День 34)
+- **`mcp/fs_server.py`** — MCP-инструменты работы с файлами: чтение, поиск по
+  нескольким файлам, анализ, запись, diff (jail по путям, `FS_ROOT`).
+- **`agent/file_assistant.py`** — ассистент-оркестратор: цель → файлы и операции.
+- **`agent/file_cli.py`** / **`chat_files.py`** — CLI файловых операций.
+- **`agent/file_scenarios.py`** — офлайн-сценарии (поиск, генерация, инварианты,
+  обновление документации) в песочнице `history/day34/`.
+
 ## Поток данных RAG-запроса
 
 ```
@@ -98,6 +112,16 @@ PR → review_server (get_pr_diff / list_changed_files)
    → промпт ревью → LLM (или офлайн-эвристики по добавленным строкам)
    → findings (баги / архитектура / рекомендации)
    → markdown-ревью + комментарий к PR
+```
+
+## Поток данных ассистента файловых операций
+
+```
+цель («найди X» / «сгенерируй файл» / «проверь правила» / «обнови доки»)
+   → classify_goal → выбор задачи
+   → MCP fs_server: search_files / read_file / analyze_file / list_files
+   → (при записи) write_file / edit_file → unified diff
+   → результат: находки, артефакты и diff (dry-run или применённые)
 ```
 
 ## Ключевые сквозные идеи курса

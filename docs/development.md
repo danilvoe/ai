@@ -31,6 +31,14 @@ bash scripts/setup_llama_cpp.sh --quant all     # обе квантизации 
 офлайн, прежде чем делать живые вызовы LLM:
 
 ```bash
+# Ассистент файловых операций (День 34) — MCP-файлы, стаб, без модели и сети
+python3 mcp/fs_server.py --check --files --search "build_support_runtime" --path agent
+python3 -m agent.file_scenarios --offline
+
+# Ассистент поддержки (День 33) — FAQ RAG + MCP-тикеты, без модели и сети
+python3 mcp/support_server.py --check --ticket T-1024 --user 1 --search "авторизация"
+python3 -m agent.support_scenarios --offline
+
 # Автоматическое ревью PR (День 32) — стаб/эвристики, без модели и сети
 python3 -m agent.project_docs --build
 python3 -m agent.code_index --build
@@ -100,6 +108,8 @@ python3 -m agent.project_docs --build
 ```bash
 python3 mcp/project_server.py --check
 python3 mcp/review_server.py --check --diff --files
+python3 mcp/support_server.py --check --ticket T-1024 --user 1
+python3 mcp/fs_server.py --check --files --search "build_support_runtime" --path agent
 python3 mcp/gitflic_server.py --check
 python3 mcp/report_server.py --check --list
 python3 -m agent.mcp_client --check

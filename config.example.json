@@ -280,6 +280,19 @@
       "timeout": 30
     }
   },
+  "file_assistant": {
+    "enabled": true,
+    "workspace_root": "",
+    "apply": false,
+    "max_chars": 8000,
+    "report_dir": "history/file_assistant",
+    "fs_server": {
+      "enabled": true,
+      "command": "python3",
+      "args": ["mcp/fs_server.py"],
+      "timeout": 30
+    }
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

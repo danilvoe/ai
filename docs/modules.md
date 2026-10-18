@@ -4,7 +4,7 @@
 > Не редактируйте его вручную — изменения будут перезаписаны.
 
 
-Всего модулей: **63**.
+Всего модулей: **72**.
 
 ## Пакет `agent/`
 
@@ -285,6 +285,62 @@ Day 10: стратегии управления контекстом — жив�
 - `check_mcp(runtime, limit: int = 10) -> dict` — Проверяет MCP-инструменты проекта (минимум — get_current_branch).
 - `check_help(assistant: DevAssistant, questions: list[dict]) -> list[dict]` — Проверяет ответы ``/help`` на вопросы о структуре проекта.
 - `render_report(index_info: dict, mcp_info: dict, help_results: list[dict], coverage_ok: bool) -> str`
+- `main() -> int`
+
+### `agent/file_assistant.py` (776 строк)
+
+День 34: ассистент для работы с файлами проекта.
+
+**Классы:**
+
+- `FileAction` — Одно действие ассистента над файлами (вызов MCP-инструмента).
+  - `to_dict(self) -> dict[str, Any]`
+- `FileFinding` — Находка: использование, нарушение правила и т.п.
+  - `to_dict(self) -> dict[str, Any]`
+- `FileTaskResult` — Результат выполнения цели ассистентом.
+  - `to_dict(self) -> dict[str, Any]`
+- `FileAssistantStubClient` — Детерминированный офлайн-генератор содержимого документов.
+  - `complete(self, messages: list[dict], temperature: float | None = None, max_tokens: int | None = None) -> Completion`
+- `FileAssistant` — Ассистент файловых операций: цель → MCP-инструменты → результат.
+  - `read_file(self, path: str, max_chars: int | None = None) -> dict[str, Any]`
+  - `search_files(self, query: str, path: str = '', glob: str = '*.py', limit: int = 100, context: int = 0) -> dict[str, Any]`
+  - `analyze_file(self, path: str) -> dict[str, Any]`
+  - `list_files(self, path: str = '', pattern: str = '', limit: int = 200) -> dict[str, Any]`
+  - `get_diff(self, path: str = '', baseline_root: str = '', max_chars: int = 8000) -> dict[str, Any]`
+  - `write_file(self, path: str, content: str, overwrite: bool = True) -> dict[str, Any]`
+  - `run(self, goal: str, *, task_type: str | None = None, apply: bool | None = None, symbol: str = '', kind: str = '', target: str = '', doc_path: str = '', source_paths: list[str] | None = None, baseline_root: str = '', path: str = '') -> FileTaskResult` — Выполняет цель ассистента, самостоятельно выбирая файлы и инструменты.
+
+**Функции:**
+
+- `classify_goal(goal: str) -> str` — Определяет тип задачи по формулировке цели.
+- `extract_symbol(goal: str) -> str` — Извлекает искомый символ из цели (в бэктиках/кавычках или эвристикой).
+- `render_document(kind: str, facts: dict[str, Any]) -> str` — Собирает markdown-документ из структурированных фактов (без LLM).
+- `build_fs_runtime(config: dict | None = None, workspace_root: str | Path | None = None) -> McpToolRuntime | None` — Создаёт MCP-рантайм сервера файлов из конфигурации.
+- `build_file_assistant(config: dict | None = None, offline: bool = False, workspace_root: str | Path = PROJECT_ROOT, apply: bool = False, max_chars: int = 8000, temperature: float = 0.0, with_fs_mcp: bool = True) -> FileAssistant` — Собирает ассистента файловых операций: MCP-рантайм + клиент.
+
+### `agent/file_cli.py` (279 строк)
+
+День 34: интерактивный CLI ассистента для работы с файлами.
+
+**Функции:**
+
+- `print_banner(assistant: FileAssistant) -> None`
+- `handle_command(raw: str, assistant: FileAssistant, state: dict) -> bool` — Обрабатывает slash-команду. True — ввод был командой.
+- `main() -> int`
+
+### `agent/file_scenarios.py` (359 строк)
+
+День 34: сквозной сценарий ассистента файловых операций (офлайн-проверка).
+
+**Функции:**
+
+- `now_iso() -> str`
+- `prepare_sandbox(work_dir: Path) -> dict[str, Path]` — Создаёт (пересоздаёт) песочницу и возвращает её пути.
+- `check_find_usages(symbol: str, config: dict) -> dict` — Сценарий 1: поиск использований символа по многим файлам (чтение).
+- `check_generate(artifacts: Path, config: dict) -> dict` — Сценарий 2: генерация нового файла из исходников (запись + diff).
+- `check_invariants(invariants_dir: Path, config: dict) -> dict` — Сценарий 3: проверка соответствия файлов правилам (инварианты).
+- `check_update_docs(baseline: Path, work: Path, config: dict) -> dict` — Сценарий 4: обновление документации по изменениям в коде + diff.
+- `render_report(scenarios: dict, all_ok: bool) -> str`
 - `main() -> int`
 
 ### `agent/grounding.py` (1401 строк)
@@ -1009,6 +1065,75 @@ Day 18: планировщик и фоновые задачи — подсчёт
 
 - `main() -> None`
 
+### `agent/support_assistant.py` (789 строк)
+
+День 33: ассистент поддержки пользователей.
+
+**Классы:**
+
+- `SupportAnswer` — Ответ ассистента поддержки.
+  - `to_dict(self) -> dict[str, Any]`
+- `SupportStubClient` — Детерминированный офлайн-клиент ассистента поддержки.
+  - `complete(self, messages: list[dict], temperature: float | None = None, max_tokens: int | None = None) -> Completion`
+- `SupportAssistant` — Ассистент поддержки: RAG по FAQ + контекст тикета/пользователя через MCP.
+  - `total_vectors(self) -> int`
+  - `retrieve(self, question: str, top_k: int | None = None) -> list[RagSource]` — Ищет релевантные карточки FAQ.
+  - `resolve_ticket(self, question: str, ticket_id: str | None = None, user_id: int | None = None) -> tuple[str | None, int | None]` — Определяет тикет/пользователя для вопроса (через MCP).
+  - `collect_ticket_context(self, ticket_id: str | None, user_id: int | None = None) -> dict[str, Any]` — Собирает контекст тикета и пользователя через MCP.
+  - `ask(self, question: str, ticket_id: str | None = None, user_id: int | None = None, top_k: int | None = None, history: list[dict[str, str]] | None = None) -> SupportAnswer` — Отвечает на вопрос о продукте с учётом FAQ и данных тикета.
+  - `get_ticket(self, ticket_id: str) -> dict[str, Any]`
+  - `get_user(self, user_id: int) -> dict[str, Any]`
+  - `list_tickets(self, user_id: int | None = None) -> dict[str, Any]`
+
+**Функции:**
+
+- `render_ticket_context(context: dict[str, Any]) -> str` — Человекочитаемый контекст тикета и пользователя для промпта.
+- `build_support_messages(question: str, faq_sources: list[RagSource], ticket_context: dict[str, Any], max_chars: int = 6000, history: list[dict[str, str]] | None = None, system_prompt: str | None = None) -> list[dict[str, str]]` — Формирует сообщения ассистента: FAQ + контекст тикета + вопрос.
+- `parse_answer_meta(text: str) -> dict[str, Any]` — Разбирает машиночитаемый JSON-блок ответа (answer_kind/ticket_id/escalate).
+- `resolve_support_ticket(question: str, ticket_id: str | None, user_id: int | None, call_tool: Any) -> tuple[str | None, int | None]` — Определяет тикет по вопросу: явный id → тикет пользователя → текстовый поиск.
+- `build_support_runtime(config: dict | None = None) -> McpToolRuntime | None` — Создаёт MCP-рантайм сервера поддержки из конфигурации.
+- `build_support_assistant(config: dict | None = None, offline: bool = False, faq_path: str = DEFAULT_FAQ_PATH, index_dir: str = DEFAULT_INDEX_DIR, dataset: str = DEFAULT_DATASET, strategy: str = DEFAULT_STRATEGY, top_k: int = 5, min_score: float = 0.0, temperature: float = 0.1, max_context_chars: int = 6000, relevance_threshold: float = 0.3, chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_CHUNK_OVERLAP, build_index_if_missing: bool = True, with_support_mcp: bool = True) -> SupportAssistant` — Собирает ассистента поддержки: FAQ-индекс, MCP-рантайм, LLM-клиент.
+
+### `agent/support_cli.py` (348 строк)
+
+День 33: интерактивный CLI ассистента поддержки.
+
+**Функции:**
+
+- `print_banner(assistant) -> None`
+- `handle_command(raw: str, assistant, state: dict) -> bool` — Обрабатывает slash-команду. True — ввод был командой.
+- `main() -> int`
+
+### `agent/support_faq.py` (493 строк)
+
+День 33: RAG по FAQ ассистента поддержки.
+
+**Классы:**
+
+- `SupportFaq` — Одна карточка FAQ, попадающая в RAG-индекс.
+
+**Функции:**
+
+- `load_faq(path: str | Path = DEFAULT_FAQ_PATH, root: Path = PROJECT_ROOT) -> list[SupportFaq]` — Загружает карточки FAQ из JSON-файла.
+- `chunk_faq(item: SupportFaq, chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_CHUNK_OVERLAP) -> list[Chunk]` — Превращает карточку FAQ в один или несколько чанков.
+- `build_faq_index(root: Path = PROJECT_ROOT, faq_path: str | Path = DEFAULT_FAQ_PATH, index_dir: str | Path = DEFAULT_INDEX_DIR, dataset: str = DEFAULT_DATASET, strategy: str = DEFAULT_STRATEGY, chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_CHUNK_OVERLAP, embedder: HashingEmbedder | None = None, items: list[SupportFaq] | None = None, save: bool = True) -> tuple[FaissIndex, list[SupportFaq]]` — Собирает (и при ``save=True`` сохраняет) индекс FAQ.
+- `load_faq_retriever(index_dir: str | Path = DEFAULT_INDEX_DIR, dataset: str = DEFAULT_DATASET, strategy: str = DEFAULT_STRATEGY, top_k: int = 5, min_score: float = 0.0, root: Path = PROJECT_ROOT) -> RagRetriever` — Загружает индекс FAQ с диска как :class:`RagRetriever`.
+- `build_faq_context(sources: list[RagSource], max_chars: int = 6000) -> str` — Собирает контекст FAQ с указанием вопроса и раздела.
+- `main() -> int`
+
+### `agent/support_scenarios.py` (355 строк)
+
+День 33: сквозной сценарий ассистента поддержки (офлайн-проверка).
+
+**Функции:**
+
+- `now_iso() -> str`
+- `check_faq_index(index_dir: str, strategy: str, top_k: int) -> dict` — Собирает индекс FAQ и проверяет полноту поиска по контрольным вопросам.
+- `check_mcp(runtime, ticket_id: str) -> dict` — Проверяет MCP-CRM: пользователь, тикет, список, поиск, готовый контекст.
+- `check_qa(assistant: SupportAssistant, ticket_id: str, top_k: int) -> dict` — Проверяет привязку тикета и сквозной ответ по контрольным вопросам.
+- `render_report(index_info: dict, mcp_info: dict, qa: dict, all_ok: bool) -> str`
+- `main() -> int`
+
 ### `agent/task_scenarios.py` (358 строк)
 
 Day 13: состояние задачи как конечный автомат.
@@ -1202,6 +1327,23 @@ Day 27: сквозная проверка веб-чата с локальной 
 
 ## Пакет `mcp/`
 
+### `mcp/fs_server.py` (574 строк)
+
+День 34: MCP-сервер файловых операций (чтение, поиск, анализ, запись).
+
+**Функции:**
+
+- `workspace_root() -> Path` — Корень рабочей области (можно переопределить через env ``FS_ROOT``).
+- `list_files(path: Annotated[str, Field(description='Префикс пути/каталог (пусто — вся область).')] = '', pattern: Annotated[str, Field(description="Glob-шаблон имени файла, например '*.py'.")] = '', limit: Annotated[int, Field(description='Сколько файлов вернуть (по умолчанию 200).')] = 200) -> dict` — Перечислить файлы рабочей области.
+- `read_file(path: Annotated[str, Field(description='Путь к файлу относительно корня области.')], start_line: Annotated[int, Field(description='Первая строка (1-based, по умолчанию 1).')] = 1, end_line: Annotated[int, Field(description='Последняя строка (0 — до конца файла).')] = 0, max_chars: Annotated[int, Field(description='Максимум символов в ответе.')] = 8000) -> dict` — Прочитать файл или диапазон строк.
+- `search_files(query: Annotated[str, Field(description='Строка или регулярное выражение для поиска.')], path: Annotated[str, Field(description='Каталог/префикс для поиска (пусто — вся область).')] = '', glob: Annotated[str, Field(description="Glob-шаблон файлов, например '*.py'.")] = '', regex: Annotated[bool, Field(description='Считать query регулярным выражением.')] = False, case_sensitive: Annotated[bool, Field(description='Учитывать регистр.')] = False, limit: Annotated[int, Field(description='Сколько файлов-совпадений вернуть.')] = 100, context: Annotated[int, Field(description='Сколько соседних строк показывать (0 — только строка).')] = 0) -> dict` — Найти текст по нескольким файлам.
+- `analyze_file(path: Annotated[str, Field(description='Путь к файлу для анализа.')]) -> dict` — Проанализировать структуру файла.
+- `file_info(path: Annotated[str, Field(description='Путь к файлу.')]) -> dict` — Метаданные файла: размер, время изменения, число строк.
+- `write_file(path: Annotated[str, Field(description='Путь к файлу для записи.')], content: Annotated[str, Field(description='Полное содержимое файла.')], overwrite: Annotated[bool, Field(description='Разрешить перезапись существующего файла.')] = True, create_dirs: Annotated[bool, Field(description='Создавать недостающие каталоги.')] = True) -> dict` — Создать или перезаписать файл.
+- `edit_file(path: Annotated[str, Field(description='Путь к изменяемому файлу.')], old: Annotated[str, Field(description='Подстрока, которую нужно заменить.')], new: Annotated[str, Field(description='Новая подстрока.')], count: Annotated[int, Field(description='Сколько вхождений заменить (0 — все).')] = 1) -> dict` — Заменить подстроку в файле.
+- `make_diff(path: Annotated[str, Field(description='Файл или каталог (пусто — вся область).')] = '', baseline_root: Annotated[str, Field(description='Каталог-эталон для сравнения (difflib). Пусто — git diff.')] = '', max_chars: Annotated[int, Field(description='Максимум символов diff.')] = 8000) -> dict` — Показать изменения файлов.
+- `main() -> None`
+
 ### `mcp/gitflic_api.py` (128 строк)
 
 Day 18: общий слой доступа к публичному API GitFlic.
@@ -1338,4 +1480,20 @@ Day 20: третий MCP-сервер оркестрации — журнал и
 - `list_changed_files(base: Annotated[str, Field(description="База сравнения (SHA/ветка), по умолчанию 'HEAD'.")] = 'HEAD', head: Annotated[str, Field(description='Верхняя ревизия (SHA/ветка); пусто — рабочее дерево.')] = '') -> dict` — Перечислить изменённые в PR файлы со статусом и числом добавленных строк.
 - `get_file_content(path: Annotated[str, Field(description='Путь к файлу относительно корня репозитория.')], ref: Annotated[str, Field(description='Ревизия (SHA/ветка); пусто — рабочий файл.')] = '', max_chars: Annotated[int, Field(description='Максимальная длина содержимого в символах (по умолчанию 20000).')] = 20000) -> dict` — Прочитать содержимое файла на выбранной ревизии.
 - `get_pr_metadata() -> dict` — Получить метаданные pull request из GitHub-события.
+- `main() -> None`
+
+### `mcp/support_server.py` (374 строк)
+
+День 33: MCP-сервер поддержки — CRM с пользователями и тикетами.
+
+**Функции:**
+
+- `data_dir() -> Path` — Каталог с JSON-выгрузкой CRM (можно переопределить через env).
+- `render_ticket_context(ticket: dict, user: dict | None = None) -> str` — Человекочитаемый контекст «пользователь + тикет + переписка».
+- `get_user(user_id: Annotated[int, Field(description='Идентификатор пользователя (id).')]) -> dict` — Получить профиль пользователя по идентификатору.
+- `find_user(query: Annotated[str, Field(description='Подстрока для поиска: логин, e-mail или имя.')], limit: Annotated[int, Field(description='Сколько результатов вернуть (по умолчанию 5).')] = 5) -> dict` — Найти пользователя по логину, e-mail или имени.
+- `get_ticket(ticket_id: Annotated[str, Field(description="Идентификатор тикета, например 'T-1024'.")]) -> dict` — Получить полный тикет по идентификатору (включая переписку).
+- `list_tickets(user_id: Annotated[str, Field(description='Фильтр по id пользователя (пусто — все).')] = '', status: Annotated[str, Field(description='Фильтр по статусу (пусто — все).')] = '', limit: Annotated[int, Field(description='Сколько тикетов вернуть (по умолчанию 20).')] = 20) -> dict` — Перечислить тикеты (краткая форма) с фильтрами по пользователю и статусу.
+- `search_tickets(query: Annotated[str, Field(description='Текст для поиска по теме, тегам и переписке.')], limit: Annotated[int, Field(description='Сколько результатов вернуть (по умолчанию 10).')] = 10, scope: Annotated[str, Field(description="Где искать: 'all' (тема/теги/категория/переписка) или 'meta' (без переписки).")] = 'all') -> dict` — Найти тикеты по тексту: тема, теги и (при scope='all') переписка.
+- `get_ticket_context(ticket_id: Annotated[str, Field(description="Идентификатор тикета, например 'T-1024'.")]) -> dict` — Собрать готовый контекст тикета: пользователь + тикет + переписка.
 - `main() -> None`

@@ -115,6 +115,43 @@ python3 mcp/review_server.py --check --content agent/rag.py
 python3 mcp/review_server.py --check --metadata
 ```
 
+### `mcp/support_server.py` — CRM поддержки (День 33)
+Локальные инструменты по JSON-CRM (`mcp/support_data/`, каталог задаётся
+`SUPPORT_DATA_DIR`):
+
+| Инструмент | Возвращает |
+| --- | --- |
+| `get_user` | Профиль пользователя (план, версия, статус) |
+| `find_user` | Поиск пользователя по логину/e-mail/имени |
+| `get_ticket` | Полный тикет с перепиской |
+| `list_tickets` | Тикеты пользователя (фильтр по статусу) |
+| `search_tickets` | Поиск тикетов по тексту (`scope=all|meta`) |
+| `get_ticket_context` | Готовый контекст «пользователь + тикет + переписка» |
+
+```bash
+python3 mcp/support_server.py --check --ticket T-1024 --user 1 --search "авторизация"
+```
+
+### `mcp/fs_server.py` — файловые операции (День 34)
+Локальные инструменты чтения и записи файлов проекта (jail по путям, корень
+задаётся `FS_ROOT`):
+
+| Инструмент | Возвращает |
+| --- | --- |
+| `list_files` | Список файлов (`path` — префикс, `pattern` — glob, `limit`) |
+| `read_file` | Содержимое файла или диапазона строк (`start_line`/`end_line`) |
+| `search_files` | Поиск по многим файлам: `{file, count, matches}` |
+| `analyze_file` | Структура файла (для `.py` — `ast`: импорты/классы/функции) |
+| `file_info` | Размер, mtime, число строк |
+| `write_file` | Создание/перезапись файла (`overwrite`, `create_dirs`) |
+| `edit_file` | Точечная замена подстроки (`old` → `new`, `count`) |
+| `make_diff` | Diff относительно git или baseline-каталога (`baseline_root`) |
+
+```bash
+python3 mcp/fs_server.py --check --files --search "build_support_runtime" --path agent
+python3 mcp/fs_server.py --check --analyze agent/rag.py
+```
+
 ### Формат вызова MCP из агента
 
 `agent/mcp_tools.McpToolRuntime` поднимает сервер по stdio, вызывает инструмент
