@@ -258,6 +258,28 @@
       "timeout": 30
     }
   },
+  "support": {
+    "enabled": true,
+    "faq_path": "mcp/support_data/faq.json",
+    "index_dir": "history/index",
+    "dataset": "support_faq",
+    "strategy": "faq",
+    "top_k": 5,
+    "min_score": 0.0,
+    "relevance_threshold": 0.3,
+    "temperature": 0.1,
+    "max_context_chars": 6000,
+    "chunk_size": 700,
+    "overlap": 120,
+    "report_dir": "history/support",
+    "support_server": {
+      "enabled": true,
+      "command": "python3",
+      "args": ["mcp/support_server.py"],
+      "data_dir": "mcp/support_data",
+      "timeout": 30
+    }
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

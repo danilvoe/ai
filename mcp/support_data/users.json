@@ -1,0 +1,78 @@
+{
+  "product": "Recipe Chat Service",
+  "description": "Синтетическая CRM-выгрузка пользователей сервиса рецептов для MCP-сервера поддержки (mcp/support_server.py).",
+  "users": [
+    {
+      "id": 1,
+      "username": "anna",
+      "email": "anna@example.com",
+      "name": "Анна Кузнецова",
+      "plan": "pro",
+      "product": "Recipe Chat Service",
+      "version": "1.2.0",
+      "status": "active",
+      "created_at": "2026-03-12",
+      "last_login": "2026-10-17"
+    },
+    {
+      "id": 2,
+      "username": "boris",
+      "email": "boris@example.com",
+      "name": "Борис Иванов",
+      "plan": "free",
+      "product": "Recipe Chat Service",
+      "version": "1.1.0",
+      "status": "active",
+      "created_at": "2026-05-02",
+      "last_login": "2026-10-10"
+    },
+    {
+      "id": 3,
+      "username": "vera",
+      "email": "vera@example.com",
+      "name": "Вера Соколова",
+      "plan": "team",
+      "product": "Recipe Chat Service",
+      "version": "1.2.0",
+      "status": "active",
+      "created_at": "2026-01-20",
+      "last_login": "2026-10-18"
+    },
+    {
+      "id": 4,
+      "username": "grigoriy",
+      "email": "grigoriy@example.com",
+      "name": "Григорий Петров",
+      "plan": "free",
+      "product": "Recipe Chat Service",
+      "version": "1.0.0",
+      "status": "blocked",
+      "created_at": "2025-11-30",
+      "last_login": "2026-08-14"
+    },
+    {
+      "id": 5,
+      "username": "daria",
+      "email": "daria@example.com",
+      "name": "Дарья Морозова",
+      "plan": "pro",
+      "product": "Recipe Chat Service",
+      "version": "1.2.0",
+      "status": "active",
+      "created_at": "2026-06-06",
+      "last_login": "2026-10-16"
+    },
+    {
+      "id": 6,
+      "username": "egor",
+      "email": "egor@example.com",
+      "name": "Егор Волков",
+      "plan": "free",
+      "product": "Recipe Chat Service",
+      "version": "1.2.0",
+      "status": "active",
+      "created_at": "2026-09-01",
+      "last_login": "2026-10-18"
+    }
+  ]
+}

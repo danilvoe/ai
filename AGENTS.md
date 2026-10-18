@@ -2,7 +2,7 @@
 
 ## 1. Project Context & Branch Architecture
 
-This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 32**.
+This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 33**.
 
 - **Branch-per-Lesson Structure**: Each Git branch (`day2`, `day3`, ..., `day27`, `master`) represents the code state at that specific lesson.
 - **Cumulative Codebase**: The project evolves incrementally. For example, `day25` contains RAG chat with task state memory, while `day10` only contains early context management.
@@ -44,7 +44,7 @@ To prevent massive token consumption and context window exhaustion, any coding a
 
 ---
 
-## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 32)
+## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 33)
 
 Use this table to jump directly to the relevant file instead of traversing the filesystem:
 
@@ -81,6 +81,7 @@ Use this table to jump directly to the relevant file instead of traversing the f
 | **Day 30** | Final project: multi-user Recipe Chat Service (Flask + SQLite, auth, many chats/user, local RAG + history, self-contained `core/`, index copy/rebuild) | `recipe_chat_service/run.py`, `recipe_chat_service/rebuild_index.py`, `recipe_chat_service/core/` (`llm_client`, `local_llm`, `indexing`, `rag`, `refusal`, `local_rag`, `index_build`), `recipe_chat_service/app/` (`config`, `db`, `security`, `engine`, `chat_service`, `routes/`, templates/static), `recipe_chat_service/scenarios/service_scenarios.py` | `cd recipe_chat_service && python3 -m scenarios.service_scenarios --offline` |
 | **Day 31** | Developer assistant: RAG over project docs (README + `docs/`) + MCP project context (git branch/files/commits/diff) + `/help` command; docs auto-generation | `docs/*.md` (architecture, data-schemas, api, development, generated modules), `scripts/generate_docs.py`, `agent/project_docs.py`, `mcp/project_server.py`, `agent/dev_assistant.py`, `agent/dev_assistant_cli.py`, `chat_dev.py`, `agent/dev_assistant_scenarios.py` | `python3 -m agent.dev_assistant_scenarios --offline` |
 | **Day 32** | Automated PR code review: pipeline gets PR diff + changed files (MCP), uses RAG over docs **and code**, returns review (bugs / architecture issues / recommendations); GitHub Action on `pull_request` + PR comment | `agent/code_index.py`, `mcp/review_server.py`, `agent/code_review.py`, `agent/review_cli.py`, `review_pr.py`, `agent/review_scenarios.py`, `.github/workflows/code-review.yml`, `requirements.txt` | `python3 -m agent.review_scenarios --offline` |
+| **Day 33** | User support assistant: FAQ knowledge base + RAG over it, user/ticket context from a JSON CRM via MCP, answers product questions with ticket data («Почему не работает авторизация?») | `mcp/support_server.py`, `mcp/support_data/` (`faq.json`, `users.json`, `tickets.json`), `agent/support_faq.py`, `agent/support_assistant.py`, `agent/support_cli.py`, `chat_support.py`, `agent/support_scenarios.py` | `python3 -m agent.support_scenarios --offline` |
 
 ---
 
@@ -141,6 +142,15 @@ When working on a specific subsystem, target these exact modules:
 - **Scenario**: `agent/review_scenarios.py` (`--offline`) — index check, MCP diff/changed-files check, heuristic fixture (all 3 categories), full e2e on a temp repo with a planted patch; report in `history/code_review/`.
 - **Config**: `code_review` section (`index_dir`, `docs_dataset`, `code_dataset`, `strategy`, `code_strategy`, `top_k`, `min_score`, `temperature`, `max_context_chars`, `max_diff_chars`, `fail_on`, `post_comment`, `report_dir`, `review_server`).
 
+### H. User Support Assistant (Day 33)
+- **Data / FAQ KB**: `mcp/support_data/faq.json` (26 Q&A cards for Recipe Chat Service, fields `id/question/answer/category/product/tags/related`), `mcp/support_data/users.json`, `mcp/support_data/tickets.json` (synthetic CRM; anchored ticket `T-1024` about login).
+- **Support MCP (CRM)**: `mcp/support_server.py` (`FastMCP` "support", local JSON, data dir via `SUPPORT_DATA_DIR`); tools `get_user`, `find_user`, `get_ticket`, `list_tickets`, `search_tickets` (`scope="all"|"meta"`), `get_ticket_context`; `--check` mode.
+- **FAQ RAG**: `agent/support_faq.py` (`SupportFaq`, `load_faq`, `chunk_faq`, `build_faq_index`, `load_faq_retriever`, `build_faq_context`); index at `history/index/support_faq/faq/`; metadata `faq_id`/`category`/`tags`; `CONTROL_QUESTIONS` (16 verification questions incl. negative control).
+- **Assistant**: `agent/support_assistant.py` (`SupportAnswer`, `SupportAssistant.ask(question, ticket_id, user_id)`, `resolve_support_ticket`, `build_support_messages`, `SUPPORT_SYSTEM_PROMPT`, `SupportStubClient`, `parse_answer_meta`, `build_support_runtime`, `build_support_assistant`); relevance guardrail (`relevance_threshold=0.30`) — weak FAQ matches → escalate; ticket auto-resolution: explicit id / `T-\d+` regex / user's tickets / `search_tickets` (meta) with confidence rule; answer JSON block `answer_kind/ticket_id/escalate/steps`.
+- **CLI + entrypoint**: `agent/support_cli.py`, `chat_support.py` (`/ticket`, `/user`, `/tickets`, `/sources`, `/new`, `/reindex`, `/help`; `--offline`, `--ticket`, `--user`, `--question`, `--no-mcp`).
+- **Scenario**: `agent/support_scenarios.py` (`--offline`) — FAQ recall (16/16), MCP user/ticket/list/search/context checks, anchor case (ticket status/version in answer), negative control; report in `history/support/`.
+- **Config**: `support` section (`faq_path`, `index_dir`, `dataset`, `strategy`, `top_k`, `min_score`, `relevance_threshold`, `temperature`, `max_context_chars`, `chunk_size`, `overlap`, `report_dir`, `support_server`).
+
 ---
 
 ## 6. Verification Cheat Sheet (Fast & Zero API Token Cost)
@@ -148,6 +158,12 @@ When working on a specific subsystem, target these exact modules:
 Run these exact commands to verify your changes without incurring API costs or waiting for network roundtrips:
 
 ```bash
+# Day 33 User support assistant (FAQ RAG + MCP ticket context) verification - offline stub, no model/network
+python3 mcp/support_server.py --check --ticket T-1024 --user 1 --search "авторизация"
+python3 -m agent.support_faq --build
+python3 -m agent.support_scenarios --offline
+python3 chat_support.py --offline --question "Почему не работает авторизация?" --ticket T-1024
+
 # Day 32 Automated PR code review (docs+code RAG, GitHub Action) verification - offline heuristics, no model/network
 python3 -m agent.project_docs --build
 python3 -m agent.code_index --build
