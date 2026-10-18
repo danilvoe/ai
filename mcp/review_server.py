@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -325,10 +326,18 @@ def main() -> None:
     if args.repo_root:
         os.environ["REVIEW_REPO_ROOT"] = args.repo_root
 
-    if args.check:
+    # Флаги разовой проверки подразумевают --check: иначе сервер уйдёт в stdio и
+    # будет ждать MCP-клиента (это выглядит как «зависание»).
+    if args.check or args.diff or args.files or args.metadata or args.content:
         raise SystemExit(_run_check(args))
 
     # Транспорт по умолчанию — stdio: сервер общается по stdin/stdout с клиентом.
+    # Пишем подсказку только в stderr: stdout — канал MCP.
+    print(
+        "MCP-сервер ревью запущен (stdio). Для разовой проверки без клиента "
+        "используйте --check (например: --check --diff --files).",
+        file=sys.stderr,
+    )
     mcp.run()
 
 

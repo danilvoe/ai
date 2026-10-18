@@ -1327,7 +1327,7 @@ Day 20: третий MCP-сервер оркестрации — журнал и
 - `build_report_index(directory: Annotated[str, Field(description='Каталог с отчётами внутри проекта.')] = DEFAULT_REPORTS_DIR, path: Annotated[str, Field(description='Куда сохранить индекс внутри проекта.')] = DEFAULT_INDEX) -> dict` — Собрать единый Markdown-индекс отчётов и журнала запусков.
 - `main() -> None`
 
-### `mcp/review_server.py` (337 строк)
+### `mcp/review_server.py` (346 строк)
 
 День 32: MCP-сервер, отдающий ассистенту данные для ревью PR.
 
