@@ -1,3 +1,91 @@
+# Day 31: Developer Assistant — Project Docs RAG + Project MCP
+
+An assistant that understands the project itself: it answers questions about the
+repository using **documentation retrieval (RAG)** over `README` + `docs/` and a
+**project MCP server** that exposes live git context (branch, files, commits, diff).
+
+**Flow:**
+**`/help <question>`** → **Docs retrieval (FAISS over README + `docs/`)** → **Project context via MCP (`get_current_branch`, files, commits, diff)** → **Grounded answer with sources (`file` + `section`)**.
+
+---
+
+## Architecture & Components
+
+| Component | Module | Responsibility |
+| --- | --- | --- |
+| **Docs indexer** | `agent/project_docs.py` | Loads `README.md`, `docs/*.md`, `AGENTS.md`; markdown-structural chunking; FAISS index at `history/index/project_docs/markdown/` |
+| **Doc generator** | `scripts/generate_docs.py` | Auto-generates `docs/modules.md` (module docstrings + public classes/functions) from `agent/` and `mcp/` source via `ast` |
+| **Project MCP server** | `mcp/project_server.py` | `get_current_branch` (required minimum), `get_repo_status`, `list_project_files`, `get_recent_commits`, `get_diff` — local `git`, no network |
+| **Assistant** | `agent/dev_assistant.py` | Combines docs RAG + project MCP + LLM; light reranking (curated docs first); deterministic offline stub |
+| **CLI** | `agent/dev_assistant_cli.py`, `chat_dev.py` | Commands `/help`, `/branch`, `/files`, `/diff`, `/sources`, `/reindex` |
+
+---
+
+## Documentation (`docs/`)
+
+| Document | Content |
+| --- | --- |
+| `docs/architecture.md` | Subsystems, module map, data flows |
+| `docs/data-schemas.md` | Config sections, recipe JSON, session JSON, FAISS index files |
+| `docs/api.md` | HTTP API, MCP servers/tools, CLI entrypoints |
+| `docs/development.md` | Branch-per-lesson rules, offline verification, linting |
+| `docs/modules.md` | **Auto-generated** module reference (`python3 scripts/generate_docs.py`) |
+
+---
+
+## Run
+
+```bash
+# 1. Build the documentation index (offline, deterministic)
+python3 -m agent.project_docs --build
+
+# 2. Interactive developer assistant (LLM answers via docs + git context)
+python3 chat_dev.py
+
+# 3. Offline mode (no model / no network, deterministic stub)
+python3 chat_dev.py --no-llm
+python3 chat_dev.py --no-llm --question "где находится MCP-сервер проекта?"
+
+# 4. Project MCP server check from the terminal (no MCP transport)
+python3 mcp/project_server.py --check --status --files --commits
+
+# 5. Full offline scenario: docs index + MCP + /help answers
+python3 -m agent.dev_assistant_scenarios --offline
+
+# 6. Regenerate the module reference and refresh the docs index
+python3 scripts/generate_docs.py
+python3 -m agent.project_docs --build
+```
+
+### `/help` and commands
+
+```text
+/help <вопрос>   — answer a question about the project (docs + git context)
+/help            — show command help and example questions
+/branch          — current git branch (MCP get_current_branch)
+/files [prefix]  — project files under version control
+/diff [path]     — working-tree diff
+/sources         — sources of the last answer (file + section)
+/reindex         — rebuild the documentation index
+/exit            — quit
+```
+
+Any plain question (without `/`) is also sent to the assistant as a project question.
+
+---
+
+## What is evaluated
+
+| Check | Requirement | Where |
+| --- | --- | --- |
+| **README + `docs/` in RAG** | Both are indexed into FAISS | `check_index` in `agent/dev_assistant_scenarios.py` |
+| **MCP exposes git branch** | `get_current_branch` returns the active branch | `check_mcp` |
+| **`/help` answers structure questions** | Non-empty, cited, includes the git branch | `check_help` (5 control questions) |
+
+Reports are stored at `history/dev_assistant/dev_report.md` and `history/dev_assistant/dev_results.json`.
+
+---
+
 # Production-like Mini-Chat CLI with RAG & Task Memory (Day 24–26)
 
 Production-like interactive mini-chat CLI combining **Retrieval-Augmented Generation (RAG)**, **Task State Memory (`RagTaskState`)**, and **Strict Attribution with Chunk IDs and Clickable Recipe URLs**.

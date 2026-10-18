@@ -2,7 +2,7 @@
 
 ## 1. Project Context & Branch Architecture
 
-This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 28**.
+This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 31**.
 
 - **Branch-per-Lesson Structure**: Each Git branch (`day2`, `day3`, ..., `day27`, `master`) represents the code state at that specific lesson.
 - **Cumulative Codebase**: The project evolves incrementally. For example, `day25` contains RAG chat with task state memory, while `day10` only contains early context management.
@@ -44,7 +44,7 @@ To prevent massive token consumption and context window exhaustion, any coding a
 
 ---
 
-## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 28)
+## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 31)
 
 Use this table to jump directly to the relevant file instead of traversing the filesystem:
 
@@ -79,6 +79,7 @@ Use this table to jump directly to the relevant file instead of traversing the f
 | **Day 28** | Fully local RAG: local retrieval (FAISS) + local LLM generation, with local-vs-cloud comparison | `agent/local_rag.py`, `agent/local_rag_scenarios.py`, `agent/web_chat.py` (per-message RAG + local/cloud model selectors in UI), `web_local.py` | `python3 -m agent.local_rag_scenarios --offline` |
 | **Day 29** | Local LLM optimization for the recipe task: params (temperature/max tokens/context window), quantization (Q4_K_M vs weaker Q2_K), case-tuned prompt template; before/after quality/speed/resources comparison + web settings panel | `agent/optimization.py`, `agent/optimization_scenarios.py`, `agent/web_chat.py` (optimization panel + `/api/settings`), `agent/rag.py`, `agent/local_rag.py`, `agent/agent.py`, `scripts/setup_llama_cpp.sh` (`--quant all`) | `python3 -m agent.optimization_scenarios --offline` |
 | **Day 30** | Final project: multi-user Recipe Chat Service (Flask + SQLite, auth, many chats/user, local RAG + history, self-contained `core/`, index copy/rebuild) | `recipe_chat_service/run.py`, `recipe_chat_service/rebuild_index.py`, `recipe_chat_service/core/` (`llm_client`, `local_llm`, `indexing`, `rag`, `refusal`, `local_rag`, `index_build`), `recipe_chat_service/app/` (`config`, `db`, `security`, `engine`, `chat_service`, `routes/`, templates/static), `recipe_chat_service/scenarios/service_scenarios.py` | `cd recipe_chat_service && python3 -m scenarios.service_scenarios --offline` |
+| **Day 31** | Developer assistant: RAG over project docs (README + `docs/`) + MCP project context (git branch/files/commits/diff) + `/help` command; docs auto-generation | `docs/*.md` (architecture, data-schemas, api, development, generated modules), `scripts/generate_docs.py`, `agent/project_docs.py`, `mcp/project_server.py`, `agent/dev_assistant.py`, `agent/dev_assistant_cli.py`, `chat_dev.py`, `agent/dev_assistant_scenarios.py` | `python3 -m agent.dev_assistant_scenarios --offline` |
 
 ---
 
@@ -120,6 +121,15 @@ When working on a specific subsystem, target these exact modules:
 - **Local LLM optimization (Day 29)**: `agent/optimization.py` (`GenerationParams`, `ModelVariant`, `PromptTemplate` + `RECIPE_STRUCTURED_SYSTEM_PROMPT`, presets, `OptimizationStubClient`, `measure_peak_rss_mb`, `compare_optimizations`, `render_optimization_markdown`), `agent/optimization_scenarios.py` (offline/live before/after comparison + web-settings HTTP checks). Web settings panel in `agent/web_chat.py` (UI + `POST /api/settings` to restart `llama-server` with a new `-c`/variant); per-request `temperature`/`max_tokens`/`context_window` overrides on `Agent.ask` and `LocalRagSystem.ask_with_rag`; `build_rag_messages(..., system_prompt=...)`; `--quant q4_k_m|q2_k|all` in `scripts/setup_llama_cpp.sh`; `local_llm.presets`/`local_llm.variants` + `optimization` config section.
 - **Fully local RAG (Day 28)**: `agent/local_rag.py` (`LocalRagStubClient`, `LocalRagSystem`, `build_local_rag_client`, `compare_local_vs_cloud`; relevance threshold 0.33 — low-score chunks dropped, refusal hides sources; `is_generic_query` softens threshold for "что можно приготовить?"; `select_history` window+budget). **Routing (Day 28+)**: browse/category queries — `detect_category` (word-prefix stem match over multi-valued `category` metadata) + `retrieve_by_category` (up to `local_rag.category_suggestions` distinct recipes ranked by cosine, category as filter), guarded by `_matches_specific_dish` so a named dish stays specific; «топ N»/lists → generic route. `strip_meta_leak` removes meta-leak sentences from **every** answer. **Follow-ups (Day 28+)**: `is_followup_query` + `_extract_ordinal` + `_heuristic_resolve_reference` resolve "подробней про 2 позицию"/"второй" against the previous turn's `meta.sources`; `resolve_followup_query` does an LLM query-rewrite with history (`FOLLOWUP_REWRITE_SYSTEM_PROMPT`) for pronouns/pointers with the heuristic fallback; resolved query is re-retrieved and answered on route `followup`; unresolvable references ask to clarify (`CLARIFY_REFERENCE_MESSAGE`) and generic padding no longer injects below-floor junk. `agent/local_rag_scenarios.py`, web RAG via a UI mode selector ("не использовать RAG" / "рецепты", default **рецепты** when the index is available) in `web_local.py`. **Dialogue history**: web chat shares one `Conversation` across both modes; RAG replies are stored with compact `meta` (mode + sources, stripped before the LLM call in `Agent.context_messages`); previous turns fed into the prompt (`agent/rag.py` `build_rag_messages(history=..., extra_instruction=...)`); UI keeps session+mode in `localStorage` and restores history via `GET /api/history` with per-answer badges (`Conversation.append(role, content, meta=...)`).
 
+### F. Developer Assistant Subsystem (Day 31)
+- **Docs indexing**: `agent/project_docs.py` (`ProjectDocument`, `discover_documents`, `chunk_markdown`, `build_documents_index`, `load_project_retriever`, `build_docs_context`); index at `history/index/project_docs/markdown/`, reuses `HashingEmbedder`/`FaissIndex`/`RagRetriever`; chunk text is prefixed with a `Документ: … — раздел: …` context line so headings are searchable.
+- **Docs generation**: `scripts/generate_docs.py` (`ast`-based, no imports) → `docs/modules.md`; curated docs in `docs/` (`README`, `architecture`, `data-schemas`, `api`, `development`).
+- **Project MCP server**: `mcp/project_server.py` (`get_current_branch` (required), `get_repo_status`, `list_project_files`, `get_recent_commits`, `get_diff`; local `git` via `subprocess` list args, `--check` mode, `log_level="WARNING"`).
+- **Assistant**: `agent/dev_assistant.py` (`DevAssistant`, `DevAnswer`, `DevAssistantStubClient`, `build_dev_messages`, `render_project_context`, `build_project_runtime`, `build_dev_assistant`); light reranking via `SOURCE_PRIOR` + lexical overlap; `DEV_ASSISTANT_SYSTEM_PROMPT`.
+- **CLI + `/help`**: `agent/dev_assistant_cli.py`, `chat_dev.py` (`/help`, `/branch`, `/files`, `/diff`, `/sources`, `/reindex`, `/exit`; `--no-llm`, `--question`, `--no-mcp`).
+- **Scenario**: `agent/dev_assistant_scenarios.py` (`--offline`) — checks docs index, MCP branch/files/commits/diff, and 5 `/help` structure questions; report in `history/dev_assistant/`.
+- **Config**: `dev_assistant` section (`index_dir`, `dataset`, `strategy`, `top_k`, `min_score`, `temperature`, `max_context_chars`, `chunk_size`, `overlap`, `report_dir`, `project_server`).
+
 ---
 
 ## 6. Verification Cheat Sheet (Fast & Zero API Token Cost)
@@ -127,6 +137,11 @@ When working on a specific subsystem, target these exact modules:
 Run these exact commands to verify your changes without incurring API costs or waiting for network roundtrips:
 
 ```bash
+# Day 31 Developer assistant (docs RAG + project MCP) verification - offline stub, no model/network
+python3 -m agent.project_docs --build
+python3 mcp/project_server.py --check
+python3 -m agent.dev_assistant_scenarios --offline
+
 # Day 29 Local LLM optimization verification - offline stub, no model/network
 python3 -m agent.optimization_scenarios --offline
 
