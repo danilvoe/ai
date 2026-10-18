@@ -31,7 +31,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 
 # Допустимые переходы конечного автомата: этап -> кортеж следующих этапов.
 # None ('' ) — задача завершена, переходов нет.

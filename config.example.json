@@ -236,6 +236,28 @@
       "timeout": 30
     }
   },
+  "code_review": {
+    "enabled": true,
+    "index_dir": "history/index",
+    "docs_dataset": "project_docs",
+    "code_dataset": "project_code",
+    "strategy": "markdown",
+    "code_strategy": "symbols",
+    "top_k": 5,
+    "min_score": 0.0,
+    "temperature": 0.0,
+    "max_context_chars": 8000,
+    "max_diff_chars": 20000,
+    "fail_on": "none",
+    "post_comment": true,
+    "report_dir": "history/code_review",
+    "review_server": {
+      "enabled": true,
+      "command": "python3",
+      "args": ["mcp/review_server.py"],
+      "timeout": 30
+    }
+  },
   "input_cost_per_million": 1.0,
   "output_cost_per_million": 2.0,
   "models": [

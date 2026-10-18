@@ -1,9 +1,9 @@
 # Документация проекта AI Advent
 
 Учебный репозиторий по курсу **AI Advent (LLM & Agents)** — практические решения
-для Дней 1–31. Каждая git-ветка (`day2`, `day3`, …, `day31`, `master`) фиксирует
+для Дней 1–32. Каждая git-ветка (`day2`, `day3`, …, `day32`, `master`) фиксирует
 состояние кода на соответствующем уроке, поэтому проект развивается накопительно:
-`day31` содержит всё, что было в предыдущих днях.
+`day32` содержит всё, что было в предыдущих днях.
 
 ## Разделы документации
 
@@ -31,12 +31,27 @@ python3 chat_dev.py --no-llm               # офлайн-режим без об
 [`mcp/project_server.py`](../mcp/project_server.py) и умеет сообщать текущую
 git-ветку, список файлов, историю коммитов и diff.
 
+## Автоматическое ревью PR (День 32)
+
+Пайплайн GitHub Action [`.github/workflows/code-review.yml`](../.github/workflows/code-review.yml)
+на каждый `pull_request` получает diff и изменённые файлы через MCP-сервер
+[`mcp/review_server.py`](../mcp/review_server.py), ищет контекст в двух RAG-индексах
+(документация + исходный код) и публикует ревью комментарием к PR: потенциальные
+баги, архитектурные проблемы и рекомендации.
+
+```bash
+python3 -m agent.project_docs --build      # индекс документации
+python3 -m agent.code_index --build        # индекс исходного кода
+python3 review_pr.py --base HEAD~1 --head HEAD --offline   # локальный прогон
+python3 -m agent.review_scenarios --offline                # офлайн-проверка
+```
+
 ## Обзор репозитория
 
 - **`agent/`** — ядро: агент и CLI, память, task state, MCP-клиент, RAG-подсистема
   (индексация, поиск, реранкинг, grounding), локальная LLM, веб-чат.
 - **`mcp/`** — автономные FastMCP-серверы: `gitflic_server`, `pipeline_server`,
-  `report_server`, `project_server`.
+  `report_server`, `project_server`, `review_server`.
 - **`recipe_chat_service/`** — итоговый проект Дня 30: многопользовательский
   сервис рецептов на Flask + SQLite с самодостаточной папкой `core/`.
 - **`scripts/`** — вспомогательные скрипты: сборка `llama.cpp`, генерация

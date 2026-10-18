@@ -1,0 +1,63 @@
+name: Code review
+
+# Пайплайн Дня 32: на каждый PR ассистент получает diff и изменённые файлы,
+# использует RAG (документация + код) и публикует текст ревью.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Полная история: нужна для `git diff base...head`.
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build RAG indexes (docs + code)
+        run: |
+          python3 -m agent.project_docs --build
+          python3 -m agent.code_index --build
+
+      - name: Review pull request
+        env:
+          # Режим выбирается автоматически: если OPENAI_API_KEY задан — живое
+          # ревью моделью, иначе детерминированные офлайн-эвристики (без сети,
+          # работает и для PR из форков без доступа к секретам).
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 review_pr.py \
+            --event "$GITHUB_EVENT_PATH" \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --post-comment \
+            --output review.md \
+            --json review.json
+
+      - name: Upload review artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-review
+          path: |
+            review.md
+            review.json
+          if-no-files-found: warn

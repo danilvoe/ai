@@ -2,7 +2,7 @@
 
 ## 1. Project Context & Branch Architecture
 
-This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 31**.
+This repository contains practical solutions for the **AI Advent (LLM & Agents)** educational curriculum, spanning **Day 1 through Day 32**.
 
 - **Branch-per-Lesson Structure**: Each Git branch (`day2`, `day3`, ..., `day27`, `master`) represents the code state at that specific lesson.
 - **Cumulative Codebase**: The project evolves incrementally. For example, `day25` contains RAG chat with task state memory, while `day10` only contains early context management.
@@ -44,7 +44,7 @@ To prevent massive token consumption and context window exhaustion, any coding a
 
 ---
 
-## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 31)
+## 4. Complete Lesson & File Navigation Matrix (Day 1 – Day 32)
 
 Use this table to jump directly to the relevant file instead of traversing the filesystem:
 
@@ -80,6 +80,7 @@ Use this table to jump directly to the relevant file instead of traversing the f
 | **Day 29** | Local LLM optimization for the recipe task: params (temperature/max tokens/context window), quantization (Q4_K_M vs weaker Q2_K), case-tuned prompt template; before/after quality/speed/resources comparison + web settings panel | `agent/optimization.py`, `agent/optimization_scenarios.py`, `agent/web_chat.py` (optimization panel + `/api/settings`), `agent/rag.py`, `agent/local_rag.py`, `agent/agent.py`, `scripts/setup_llama_cpp.sh` (`--quant all`) | `python3 -m agent.optimization_scenarios --offline` |
 | **Day 30** | Final project: multi-user Recipe Chat Service (Flask + SQLite, auth, many chats/user, local RAG + history, self-contained `core/`, index copy/rebuild) | `recipe_chat_service/run.py`, `recipe_chat_service/rebuild_index.py`, `recipe_chat_service/core/` (`llm_client`, `local_llm`, `indexing`, `rag`, `refusal`, `local_rag`, `index_build`), `recipe_chat_service/app/` (`config`, `db`, `security`, `engine`, `chat_service`, `routes/`, templates/static), `recipe_chat_service/scenarios/service_scenarios.py` | `cd recipe_chat_service && python3 -m scenarios.service_scenarios --offline` |
 | **Day 31** | Developer assistant: RAG over project docs (README + `docs/`) + MCP project context (git branch/files/commits/diff) + `/help` command; docs auto-generation | `docs/*.md` (architecture, data-schemas, api, development, generated modules), `scripts/generate_docs.py`, `agent/project_docs.py`, `mcp/project_server.py`, `agent/dev_assistant.py`, `agent/dev_assistant_cli.py`, `chat_dev.py`, `agent/dev_assistant_scenarios.py` | `python3 -m agent.dev_assistant_scenarios --offline` |
+| **Day 32** | Automated PR code review: pipeline gets PR diff + changed files (MCP), uses RAG over docs **and code**, returns review (bugs / architecture issues / recommendations); GitHub Action on `pull_request` + PR comment | `agent/code_index.py`, `mcp/review_server.py`, `agent/code_review.py`, `agent/review_cli.py`, `review_pr.py`, `agent/review_scenarios.py`, `.github/workflows/code-review.yml`, `requirements.txt` | `python3 -m agent.review_scenarios --offline` |
 
 ---
 
@@ -130,6 +131,16 @@ When working on a specific subsystem, target these exact modules:
 - **Scenario**: `agent/dev_assistant_scenarios.py` (`--offline`) — checks docs index, MCP branch/files/commits/diff, and 5 `/help` structure questions; report in `history/dev_assistant/`.
 - **Config**: `dev_assistant` section (`index_dir`, `dataset`, `strategy`, `top_k`, `min_score`, `temperature`, `max_context_chars`, `chunk_size`, `overlap`, `report_dir`, `project_server`).
 
+### G. Code Review Automation (Day 32)
+- **Code indexing (RAG source "code")**: `agent/code_index.py` (`CodeSymbol`, `CodeModule`, `discover_code_files`, `parse_module_symbols` via `ast`, `chunk_code_module`, `build_code_index`, `load_code_retriever`, `build_code_context`); index at `history/index/project_code/symbols/`; one chunk per top-level class/function plus module header/constants chunks; metadata `module`/`symbol`/`kind`/`lineno`.
+- **Review MCP server**: `mcp/review_server.py` (`get_pr_diff` (`base...head`), `list_changed_files` (`--numstat`+`--name-status`), `get_file_content`, `get_pr_metadata` (from `GITHUB_EVENT_PATH`); repo root via `REVIEW_REPO_ROOT`; `--check` mode, `log_level="WARNING"`).
+- **Review assistant**: `agent/code_review.py` (`ReviewFinding`, `CodeReview` with `to_markdown()`, `CodeReviewAssistant`, `build_review_messages`, `CODE_REVIEW_SYSTEM_PROMPT`, `analyze_diff`, `ReviewStubClient`, `parse_findings`, `build_review_config`/`has_llm_credentials`/`build_review_runtime`/`build_review_assistant`); categories `bug`/`architecture`/`recommendation`, severities `critical`/`major`/`minor`/`info`; retrieves docs (`project_docs`) + code (`code_index`) and reranks (docs reuse `SOURCE_PRIOR`).
+- **Offline heuristics** (`analyze_diff`, only added diff lines): bare `except`, `eval`/`exec`, `shell=True`, `os.system`, hardcoded secrets, mutable defaults; architecture: LLM SDK / `faiss` / `subprocess` outside their layers, `recipe_chat_service` imported from `agent/`, `print` in library code, missing return annotations; recommendations: TODO/FIXME, docs+reindex reminder.
+- **CLI**: `agent/review_cli.py`, `review_pr.py` (`--base`/`--head`/`--event`, `--offline`, `--output`/`--json`, `--post-comment` (GitHub REST via `urllib`), `--fail-on {none,critical,major}`, `--no-mcp`); auto-selects live LLM when `OPENAI_API_KEY`/`LLM_API_KEY`+`LLM_BASE_URL`+`LLM_MODEL` present, else offline heuristics; artifacts in `history/code_review/`.
+- **Pipeline**: `.github/workflows/code-review.yml` — `on: pull_request` (opened/synchronize/reopened), `fetch-depth: 0`, builds both indexes, runs `review_pr.py --event "$GITHUB_EVENT_PATH" --post-comment`, uploads artifacts; `requirements.txt` added for CI.
+- **Scenario**: `agent/review_scenarios.py` (`--offline`) — index check, MCP diff/changed-files check, heuristic fixture (all 3 categories), full e2e on a temp repo with a planted patch; report in `history/code_review/`.
+- **Config**: `code_review` section (`index_dir`, `docs_dataset`, `code_dataset`, `strategy`, `code_strategy`, `top_k`, `min_score`, `temperature`, `max_context_chars`, `max_diff_chars`, `fail_on`, `post_comment`, `report_dir`, `review_server`).
+
 ---
 
 ## 6. Verification Cheat Sheet (Fast & Zero API Token Cost)
@@ -137,6 +148,13 @@ When working on a specific subsystem, target these exact modules:
 Run these exact commands to verify your changes without incurring API costs or waiting for network roundtrips:
 
 ```bash
+# Day 32 Automated PR code review (docs+code RAG, GitHub Action) verification - offline heuristics, no model/network
+python3 -m agent.project_docs --build
+python3 -m agent.code_index --build
+python3 mcp/review_server.py --check --diff --files
+python3 -m agent.review_scenarios --offline
+python3 review_pr.py --base HEAD~1 --head HEAD --offline
+
 # Day 31 Developer assistant (docs RAG + project MCP) verification - offline stub, no model/network
 python3 -m agent.project_docs --build
 python3 mcp/project_server.py --check

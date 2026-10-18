@@ -3,7 +3,7 @@
 ## Назначение и принцип веток
 
 Репозиторий — учебный: каждая git-ветка соответствует одному дню курса
-(`day2` … `day31`). Код развивается **накопительно**, поэтому ветка `day31`
+(`day2` … `day32`). Код развивается **накопительно**, поэтому ветка `day32`
 содержит решения всех предыдущих дней. Итоговая (`master`) ветка — самая полная.
 
 ## Структура каталогов
@@ -11,7 +11,7 @@
 | Каталог / файл | Роль |
 | --- | --- |
 | `agent/` | Ядро на Python: агент, память, task state, MCP-клиент, RAG, локальная LLM, веб-чат, сценарии |
-| `mcp/` | Автономные MCP-серверы на FastMCP (GitFlic, pipeline, report, project) |
+| `mcp/` | Автономные MCP-серверы на FastMCP (GitFlic, pipeline, report, project, review) |
 | `recipe_chat_service/` | Итоговый веб-сервис Дня 30 (Flask + SQLite, самодостаточный `core/`) |
 | `scripts/` | Сборка `llama.cpp`, генерация документации |
 | `docs/` | Документация проекта (индексируется ассистентом разработчика) |
@@ -50,6 +50,7 @@
 - **`agent/grounding.py`** — цитаты, порог анти-галлюцинаций, выравнивание цитат.
 - **`agent/rag_chat.py`**, **`agent/rag_chat_cli.py`** — мини-чат с RAG и памятью задачи.
 - **`agent/project_docs.py`** — индексация документации проекта (День 31).
+- **`agent/code_index.py`** — индексация исходного кода (День 32, датасет `project_code`).
 
 ### E. Локальная LLM (llama.cpp)
 - **`agent/local_llm.py`** — `LocalLLMConfig`, `LocalLLMServer`, `StubLocalLLM`, запуск `llama-server`.
@@ -67,6 +68,13 @@
 - **`agent/dev_assistant.py`** — ассистент: RAG по докам + MCP-контекст проекта.
 - **`agent/dev_assistant_cli.py`** / **`chat_dev.py`** — CLI с командой `/help`.
 
+### H. Автоматизация ревью кода (День 32)
+- **`agent/code_index.py`** — индексация исходного кода (RAG-источник «код»).
+- **`agent/code_review.py`** — ассистент ревью: эвристики, промпт, разбор ответа.
+- **`agent/review_cli.py`** / **`review_pr.py`** — CLI ревью и публикация комментария.
+- **`mcp/review_server.py`** — diff, изменённые файлы, содержимое, метаданные PR.
+- **`.github/workflows/code-review.yml`** — пайплайн GitHub Action на `pull_request`.
+
 ## Поток данных RAG-запроса
 
 ```
@@ -80,6 +88,16 @@
 /help <вопрос> → project_docs: поиск по документации (FAISS)
                → MCP project_server: git-ветка / файлы / diff
                → промпт (доки + контекст проекта) → LLM → ответ + источники
+```
+
+## Поток данных автоматического ревью
+
+```
+PR → review_server (get_pr_diff / list_changed_files)
+   → RAG-контекст: code_index (символы) + project_docs (доки)
+   → промпт ревью → LLM (или офлайн-эвристики по добавленным строкам)
+   → findings (баги / архитектура / рекомендации)
+   → markdown-ревью + комментарий к PR
 ```
 
 ## Ключевые сквозные идеи курса

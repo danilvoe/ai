@@ -42,7 +42,7 @@ from agent.config import load_config
 from agent.conversation import SessionStore
 from agent.invariants import Invariants
 from agent.llm_client import Completion, LLMClient
-from agent.tokens import estimate_messages_tokens, estimate_tokens
+from agent.tokens import estimate_tokens
 
 
 # Примеры инвариантов: архитектура, техрешения, стек, бизнес-правила.

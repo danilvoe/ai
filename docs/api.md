@@ -11,6 +11,7 @@
 | `python3 chat_rag.py` | `agent.rag_chat_cli` | RAG-чат с памятью задачи и источниками |
 | `python3 chat_local.py` | `agent.local_llm` | Чат с локальной LLM через `llama-cli` |
 | `python3 chat_dev.py` | `agent.dev_assistant_cli` | **Ассистент разработчика** (День 31), команда `/help` |
+| `python3 review_pr.py` | `agent.review_cli` | **Автоматическое ревью PR** (День 32) |
 | `python3 web_local.py` | `agent.web_chat` | Веб-чат (локальная/облачная модель, RAG-режим) |
 | `python3 -m agent.project_docs --build` | `agent.project_docs` | Сборка индекса документации |
 | `cd recipe_chat_service && python3 run.py` | `recipe_chat_service` | Сервис рецептов Дня 30 |
@@ -95,9 +96,59 @@ python3 mcp/project_server.py --check --files
 python3 mcp/project_server.py --check --commits
 ```
 
+### `mcp/review_server.py` — вход для ревью PR (День 32)
+Инструменты доступа к локальному репозиторию для анализа pull request (офлайн,
+через `git`; каталог задаётся `REVIEW_REPO_ROOT`):
+
+| Инструмент | Возвращает |
+| --- | --- |
+| `get_pr_diff` | Diff `base...head` (или рабочего дерева): `{base, head, chars, truncated, diff}` |
+| `list_changed_files` | Изменённые файлы: `{path, status, additions, deletions}` + счётчики |
+| `get_file_content` | Содержимое файла на ревизии: `{path, ref, chars, content}` |
+| `get_pr_metadata` | Метаданные PR из `GITHUB_EVENT_PATH` (номер, заголовок, автор, base/head) |
+
+Проверка из терминала без MCP-транспорта:
+
+```bash
+python3 mcp/review_server.py --check --diff --files
+python3 mcp/review_server.py --check --content agent/rag.py
+python3 mcp/review_server.py --check --metadata
+```
+
 ### Формат вызова MCP из агента
 
 `agent/mcp_tools.McpToolRuntime` поднимает сервер по stdio, вызывает инструмент
 (`runtime.call(name, arguments)`) и возвращает `ToolResult` с полями `content`
 (текст) и `structured` (распарсенный JSON). Мульти-серверный режим —
 `agent/orchestrator.McpOrchestrator` с маршрутизацией по имени инструмента.
+
+## 5. Пайплайн ревью PR (GitHub Action)
+
+`.github/workflows/code-review.yml` запускается на событиях `pull_request`
+(opened/synchronize/reopened): ставит зависимости, собирает индексы RAG
+(документация + код) и вызывает `review_pr.py`.
+
+```bash
+# локально, без модели и сети (офлайн-эвристики)
+python3 review_pr.py --base HEAD~1 --head HEAD --offline
+
+# как в CI: метаданные из события + публикация комментария к PR
+python3 review_pr.py --event "$GITHUB_EVENT_PATH" \
+  --base "$BASE_SHA" --head "$HEAD_SHA" --post-comment \
+  --output review.md --json review.json
+```
+
+| Флаг | Назначение |
+| --- | --- |
+| `--base`, `--head` | Диапазон сравнения (SHA/ветка); без них — из события или `HEAD` |
+| `--event` | Путь к payload GitHub-события (`$GITHUB_EVENT_PATH`) |
+| `--offline` / `--no-llm` | Принудительно офлайн-эвристики без обращения к модели |
+| `--output`, `--json` | Куда записать markdown-ревью и JSON-результат |
+| `--post-comment` | Опубликовать комментарий к PR через GitHub REST API |
+| `--fail-on {none,critical,major}` | Вернуть код 1 при находках заданной серьёзности (по умолчанию `none`) |
+
+Переменные окружения: `GITHUB_TOKEN` (публикация комментария),
+`GITHUB_REPOSITORY`, `GITHUB_EVENT_PATH`; для живой модели —
+`OPENAI_API_KEY`/`LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`. Если ключ не задан,
+пайплайн автоматически работает в офлайн-режиме (эвристики по добавленным
+строкам diff).

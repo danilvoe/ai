@@ -2,8 +2,8 @@
 
 ## Ветки и структура
 
-- **Ветка на урок.** Каждая git-ветка (`day2` … `day31`) — состояние кода на
-  соответствующем дне курса. Код накопительный: `day31` содержит всё предыдущее.
+- **Ветка на урок.** Каждая git-ветка (`day2` … `day32`) — состояние кода на
+  соответствующем дне курса. Код накопительный: `day32` содержит всё предыдущее.
 - **Активную ветку** всегда проверяйте перед изменениями:
   ```bash
   git branch --show-current
@@ -31,6 +31,13 @@ bash scripts/setup_llama_cpp.sh --quant all     # обе квантизации 
 офлайн, прежде чем делать живые вызовы LLM:
 
 ```bash
+# Автоматическое ревью PR (День 32) — стаб/эвристики, без модели и сети
+python3 -m agent.project_docs --build
+python3 -m agent.code_index --build
+python3 mcp/review_server.py --check --diff --files
+python3 -m agent.review_scenarios --offline
+python3 review_pr.py --base HEAD~1 --head HEAD --offline
+
 # Ассистент разработчика (День 31) — стаб, без модели и сети
 python3 -m agent.project_docs --build
 python3 -m agent.dev_assistant_scenarios --offline
@@ -92,7 +99,25 @@ python3 -m agent.project_docs --build
 
 ```bash
 python3 mcp/project_server.py --check
+python3 mcp/review_server.py --check --diff --files
 python3 mcp/gitflic_server.py --check
 python3 mcp/report_server.py --check --list
 python3 -m agent.mcp_client --check
 ```
+
+## Пайплайн ревью PR
+
+Ядро ревью (Дни 32) тестируется локально теми же командами, что и в CI, а сам
+пайплайн — GitHub Action `.github/workflows/code-review.yml` — запускается на
+`pull_request`. Локальный прогон:
+
+```bash
+python3 -m agent.project_docs --build
+python3 -m agent.code_index --build
+python3 review_pr.py --base HEAD~1 --head HEAD --offline   # без модели и сети
+python3 review_pr.py --base day31 --head day32             # живой LLM, если есть ключ
+```
+
+Режим выбирается автоматически: без ключа (`OPENAI_API_KEY`/`LLM_API_KEY`) ревью
+идёт офлайн-эвристиками, с ключом — моделью. Публикация комментария к PR требует
+`GITHUB_TOKEN` (в Action он выдаётся автоматически).

@@ -118,7 +118,6 @@ def compress(conversation: Conversation, client, config: CompressionConfig) -> b
     if not should_compress(conversation, config):
         return False
 
-    messages = conversation.messages
     keep = len(conversation.recent_messages) - config.keep_recent
     to_summarize = conversation.recent_messages[:keep]
     if not to_summarize:

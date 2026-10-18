@@ -4,7 +4,7 @@
 > Не редактируйте его вручную — изменения будут перезаписаны.
 
 
-Всего модулей: **58**.
+Всего модулей: **63**.
 
 ## Пакет `agent/`
 
@@ -59,7 +59,63 @@ CLI-интерфейс: принимает запрос пользователя
 - `print_help() -> None` — Печатает список доступных команд агента.
 - `main() -> None`
 
-### `agent/compression.py` (143 строк)
+### `agent/code_index.py` (446 строк)
+
+День 32: индексация исходного кода проекта для RAG-ревью.
+
+**Классы:**
+
+- `CodeSymbol` — Один top-level символ модуля (класс, функция, константы, шапка).
+- `CodeModule` — Python-модуль, попадающий в RAG-индекс кода.
+
+**Функции:**
+
+- `discover_code_files(root: Path = PROJECT_ROOT, globs: tuple[str, ...] = DEFAULT_CODE_GLOBS) -> list[Path]` — Находит Python-файлы проекта по glob-шаблонам (отсортировано).
+- `parse_module_symbols(text: str, max_symbol_chars: int = DEFAULT_MAX_SYMBOL_CHARS) -> list[CodeSymbol]` — Извлекает top-level символы модуля через ``ast``.
+- `chunk_code_module(module: CodeModule, max_symbol_chars: int = DEFAULT_MAX_SYMBOL_CHARS) -> list[Chunk]` — Превращает модуль в чанки с метаданными о файле и символе.
+- `load_code_module(path: Path, root: Path = PROJECT_ROOT) -> CodeModule` — Загружает один Python-модуль и разбирает его символы.
+- `load_code_modules(root: Path = PROJECT_ROOT, globs: tuple[str, ...] = DEFAULT_CODE_GLOBS) -> list[CodeModule]` — Загружает все исходники проекта.
+- `build_code_index(root: Path = PROJECT_ROOT, index_dir: str | Path = DEFAULT_CODE_INDEX_DIR, dataset: str = DEFAULT_CODE_DATASET, strategy: str = DEFAULT_CODE_STRATEGY, max_symbol_chars: int = DEFAULT_MAX_SYMBOL_CHARS, embedder: HashingEmbedder | None = None, modules: list[CodeModule] | None = None, save: bool = True) -> tuple[FaissIndex, list[CodeModule]]` — Собирает (и при ``save=True`` сохраняет) индекс исходного кода проекта.
+- `load_code_retriever(index_dir: str | Path = DEFAULT_CODE_INDEX_DIR, dataset: str = DEFAULT_CODE_DATASET, strategy: str = DEFAULT_CODE_STRATEGY, top_k: int = 5, min_score: float = 0.0, root: Path = PROJECT_ROOT) -> RagRetriever` — Загружает индекс кода с диска как :class:`RagRetriever`.
+- `build_code_context(sources: list[RagSource], max_chars: int = 6000) -> str` — Собирает контекст кода с указанием файла и символа.
+- `main() -> int`
+
+### `agent/code_review.py` (1232 строк)
+
+День 32: ассистент автоматического ревью кода.
+
+**Классы:**
+
+- `ReviewFinding` — Одна находка ревью.
+  - `to_dict(self) -> dict[str, Any]`
+- `CodeReview` — Результат автоматического ревью pull request.
+  - `by_category(self, category: str) -> list[ReviewFinding]`
+  - `counts(self) -> dict[str, int]`
+  - `max_severity(self) -> str | None`
+  - `to_dict(self) -> dict[str, Any]`
+  - `to_markdown(self) -> str` — Человекочитаемое ревью (для комментария к PR и артефакта).
+- `ReviewStubClient` — Детерминированный офлайн-клиент ревью.
+  - `complete(self, messages: list[dict], temperature: float | None = None, max_tokens: int | None = None) -> Completion`
+- `CodeReviewAssistant` — Ассистент ревью: PR-контекст (MCP) + RAG (документация + код) + LLM.
+  - `total_vectors(self) -> int`
+  - `collect_pr_context(self, base: str, head: str = '') -> dict[str, Any]` — Собирает контекст PR: diff, изменённые файлы, метаданные.
+  - `retrieve_context(self, changed_files: list[dict], diff: str, top_k: int | None = None) -> tuple[list[RagSource], list[RagSource]]` — Извлекает релевантную документацию и код по изменённым файлам.
+  - `review(self, base: str = 'HEAD', head: str = '', pr: dict | None = None) -> CodeReview` — Проводит ревью PR и возвращает структурированный результат.
+
+**Функции:**
+
+- `parse_added_lines(diff: str) -> list[_AddedLine]` — Разбирает unified diff и возвращает только добавленные строки.
+- `analyze_diff(diff: str) -> list[ReviewFinding]` — Детерминированные эвристики по добавленным строкам diff.
+- `parse_findings(answer_text: str) -> tuple[str, list[ReviewFinding]]` — Разбирает ответ модели на резюме и список находок.
+- `render_pr_metadata(pr: dict[str, Any] | None) -> str` — Человекочитаемые метаданные PR для промпта.
+- `render_changed_files(changed: list[dict]) -> str` — Список изменённых файлов для промпта.
+- `build_review_messages(pr: dict[str, Any], changed_files: list[dict], diff: str, docs_sources: list[RagSource], code_sources: list[RagSource], max_chars: int = 8000, max_diff_chars: int = 20000, system_prompt: str | None = None) -> list[dict[str, str]]` — Формирует сообщения для ассистента ревью: PR + RAG (доки и код).
+- `build_review_config(config: dict | None = None, env: dict | None = None) -> dict` — Собирает конфиг LLM-клиента, подмешивая переменные окружения.
+- `has_llm_credentials(config: dict) -> bool` — Есть ли в конфиге всё для обращения к LLM API.
+- `build_review_runtime(config: dict | None = None) -> McpToolRuntime | None` — Создаёт MCP-рантайм сервера ревью из конфигурации.
+- `build_review_assistant(config: dict | None = None, offline: bool = False, docs_index_dir: str = DEFAULT_DOCS_INDEX_DIR, docs_dataset: str = DEFAULT_DOCS_DATASET, docs_strategy: str = DEFAULT_DOCS_STRATEGY, code_index_dir: str = DEFAULT_CODE_INDEX_DIR, code_dataset: str = DEFAULT_CODE_DATASET, code_strategy: str = DEFAULT_CODE_STRATEGY, top_k: int = 5, min_score: float = 0.0, temperature: float = 0.0, max_context_chars: int = 8000, max_diff_chars: int = 20000, build_index_if_missing: bool = True, with_review_mcp: bool = True) -> CodeReviewAssistant` — Собирает ассистента ревью: оба индекса, MCP-рантайм, LLM-клиент.
+
+### `agent/compression.py` (142 строк)
 
 Сжатие истории диалога: старые сообщения заменяются кратким summary.
 
@@ -916,6 +972,35 @@ Day 23: Сквозной сценарий реранкинга, фильтрац
 
 - `main() -> None`
 
+### `agent/review_cli.py` (296 строк)
+
+День 32: CLI автоматического ревью pull request.
+
+**Функции:**
+
+- `now_iso() -> str`
+- `load_event(path: str | None) -> dict` — Загружает payload GitHub-события (если путь задан и файл существует).
+- `event_pr_info(event: dict) -> dict` — Извлекает из события PR нужные для запуска и публикации поля.
+- `post_pr_comment(body: str, repo: str, number: int, token: str) -> tuple[bool, str]` — Публикует комментарий к PR через GitHub REST API (без внешних зависимостей).
+- `should_fail(review: CodeReview, fail_on: str) -> bool` — Решает, должен ли пайплайн упасть по итогам ревью.
+- `build_review_header(review: CodeReview, mode: str) -> str`
+- `main() -> int`
+
+### `agent/review_scenarios.py` (477 строк)
+
+День 32: сквозной сценарий автоматического ревью кода (офлайн-проверка).
+
+**Функции:**
+
+- `now_iso() -> str`
+- `check_indexes(index_dir: str, strategy: str) -> dict` — Собирает индексы документации и кода, проверяет состав.
+- `check_mcp(runtime, base: str | None, head: str | None) -> dict` — Проверяет MCP-сервер ревью: diff и изменённые файлы по реальному репозиторию.
+- `check_heuristics() -> dict` — Прямая проверка эвристик и парсера находок.
+- `build_fixture_repo() -> tuple[str, str]` — Создаёт временный git-репозиторий с «посаженным» патчем.
+- `check_review_e2e(config: dict, index_dir: str, strategy: str, top_k: int) -> dict` — Полный прогон ассистента на временном репозитории с патчем.
+- `render_report(index_info: dict, mcp_info: dict, heuristics: dict, e2e: dict, all_ok: bool) -> str`
+- `main() -> int`
+
 ### `agent/scheduler_scenarios.py` (213 строк)
 
 Day 18: планировщик и фоновые задачи — подсчёт публичных проектов GitFlic.
@@ -942,7 +1027,7 @@ Day 13: состояние задачи как конечный автомат.
 - `run_interactive(config: dict, offline: bool) -> None` — Живой ввод: пользователь сам управляет конечным автоматом задачи.
 - `main() -> None`
 
-### `agent/task_state.py` (740 строк)
+### `agent/task_state.py` (739 строк)
 
 Состояние задачи как конечный автомат (Finite State Machine).
 
@@ -1240,4 +1325,17 @@ Day 20: третий MCP-сервер оркестрации — журнал и
 - `list_reports(directory: Annotated[str, Field(description='Каталог с отчётами внутри проекта.')] = DEFAULT_REPORTS_DIR) -> dict` — Перечислить сохранённые отчёты в каталоге проекта.
 - `record_run(query: Annotated[str, Field(description='Запрос/тема запуска флоу.')] = '', report_path: Annotated[str, Field(description='Путь сохранённого отчёта внутри проекта.')] = '', total_projects: Annotated[int, Field(description='Сколько проектов было в отчёте (0 — неизвестно).')] = 0, tags: Annotated[list[str] | None, Field(description='Метки запуска (необязательно).')] = None) -> dict` — Записать запуск флоу в JSON-журнал.
 - `build_report_index(directory: Annotated[str, Field(description='Каталог с отчётами внутри проекта.')] = DEFAULT_REPORTS_DIR, path: Annotated[str, Field(description='Куда сохранить индекс внутри проекта.')] = DEFAULT_INDEX) -> dict` — Собрать единый Markdown-индекс отчётов и журнала запусков.
+- `main() -> None`
+
+### `mcp/review_server.py` (337 строк)
+
+День 32: MCP-сервер, отдающий ассистенту данные для ревью PR.
+
+**Функции:**
+
+- `repo_root() -> Path` — Корень проверяемого репозитория (можно переопределить через env).
+- `get_pr_diff(base: Annotated[str, Field(description="База сравнения (SHA/ветка), по умолчанию 'HEAD'.")] = 'HEAD', head: Annotated[str, Field(description='Верхняя ревизия (SHA/ветка); пусто — рабочее дерево.')] = '', path: Annotated[str, Field(description='Ограничить diff конкретным путём (пусто — весь PR).')] = '', max_chars: Annotated[int, Field(description='Максимальная длина diff в символах (по умолчанию 20000).')] = 20000) -> dict` — Получить diff pull request (base → head).
+- `list_changed_files(base: Annotated[str, Field(description="База сравнения (SHA/ветка), по умолчанию 'HEAD'.")] = 'HEAD', head: Annotated[str, Field(description='Верхняя ревизия (SHA/ветка); пусто — рабочее дерево.')] = '') -> dict` — Перечислить изменённые в PR файлы со статусом и числом добавленных строк.
+- `get_file_content(path: Annotated[str, Field(description='Путь к файлу относительно корня репозитория.')], ref: Annotated[str, Field(description='Ревизия (SHA/ветка); пусто — рабочий файл.')] = '', max_chars: Annotated[int, Field(description='Максимальная длина содержимого в символах (по умолчанию 20000).')] = 20000) -> dict` — Прочитать содержимое файла на выбранной ревизии.
+- `get_pr_metadata() -> dict` — Получить метаданные pull request из GitHub-события.
 - `main() -> None`

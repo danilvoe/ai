@@ -185,7 +185,7 @@ def pick_session(store: SessionStore) -> Agent:
         try:
             conversation = store.get(sessions[int(choice) - 1])
         except (ValueError, IndexError):
-            print(f"Неверный выбор, создаю новую сессию.")
+            print("Неверный выбор, создаю новую сессию.")
             conversation = store.create()
         print(f"Открыта сессия: {conversation.session_id}\n")
 
