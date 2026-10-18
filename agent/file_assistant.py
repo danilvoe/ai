@@ -507,9 +507,18 @@ class FileAssistant:
         result.content = "\n".join(lines).rstrip() + "\n"
         return result
 
-    def _task_generate_file(self, goal: str, kind: str = "catalog", target: str = "") -> FileTaskResult:
+    def _task_generate_file(self, goal: str, kind: str = "", target: str = "") -> FileTaskResult:
         result = FileTaskResult(goal=goal, task_type=TASK_GENERATE_FILE)
-        kind = (kind or "catalog").strip().lower()
+        kind = (kind or "").strip().lower()
+        if kind in ("", "auto"):
+            # Тип файла не задан явно — выводим его из формулировки цели.
+            lowered = goal.lower()
+            if "adr" in lowered:
+                kind = "adr"
+            elif "changelog" in lowered or "журнал изменени" in lowered:
+                kind = "changelog"
+            else:
+                kind = "catalog"
         if kind in ("changelog", "history"):
             target = target or "history/day34/artifacts/CHANGELOG.md"
             entries = self._collect_changelog_entries()
