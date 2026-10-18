@@ -606,7 +606,7 @@ class FileAssistant:
             if path not in result.files_touched:
                 result.files_touched.append(path)
 
-        section = render_document("module_doc", {
+        section = self._generate_document("module_doc", {
             "title": "Файловые операции (День 34)",
             "intro": "Раздел сгенерирован ассистентом по исходному коду.",
             "modules": modules,
